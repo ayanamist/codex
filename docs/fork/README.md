@@ -11,16 +11,24 @@
   user data protection, and verification. Keywords: Linux, bubblewrap, bwrap,
   empty directory, `.agents`, `.aws`, `.codex`, `.git`, SIGKILL, inode, cleanup.
   Investigated: 2026-11-10.
-- [Fork release management](release-management.md): rebuilding only the Codex
-  entrypoint, reusing pinned upstream helpers, V8 and voice constraints, version
-  sources, automatic commit-based releases on code pushes, documentation-only
+- [Fork release management](release-management.md): rebuilding the Codex
+  CLI and standalone executor, reusing pinned upstream helpers, V8 and voice
+  constraints, version sources, automatic commit-based releases on code pushes, documentation-only
   push filtering, and Linux GNU builds
   compatible with glibc 2.38; Windows long-path checkout diagnosis, Cargo
   dependency caching, cold-build evidence, build timings, and Rust toolchain
-  input warning diagnosis. Keywords: fork,
+  input warning diagnosis; three-platform release scope (Linux/Windows x64,
+  macOS ARM64), observed cache eviction, and removal of the large V8 git
+  checkout while retaining other git and third-party build artifacts; V8 source
+  resolution versus compilation, upstream host reuse, available V8 prebuilt libraries, and the
+  source-coverage audit and fix for the standalone executor. Keywords: fork,
   upstream tag, release, automatic tag, version, V8, voice, installer, glibc,
   GNU, Windows, MAX_PATH, Cargo, cache, timings, Rust, toolchain, dtolnay,
-  commit hash, SemVer suffix, paths-ignore.
+  commit hash, SemVer suffix, paths-ignore, platform matrix, cache eviction,
+  V8 prebuilt, code-mode host, RUSTY_V8_ARCHIVE,
+  helper source coverage, standalone executor, Cargo source replacement,
+  V8 source snapshot, submodule downloads. A pinned 405 KB snapshot now avoids
+  V8/ICU git checkout; Linux prebuilt V8 execution was verified.
   Implemented: 2026-11-10.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,

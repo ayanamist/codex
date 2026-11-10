@@ -2,6 +2,8 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -175,23 +177,27 @@ class ForkReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.extract_package(archive, root / "package")
 
-    def make_package(self, root, target=release.TARGETS[0]):
+    def make_package(self, root, target=release.TARGETS[0], *, executor_inventory=True):
         package = root / "package"
         resource_target = release.upstream_target(target)
+        suffix = ".exe" if "windows" in target else ""
         commit = "a" * 40
         metadata = {
             "layoutVersion": 1, "version": "0.167.0", "target": resource_target,
-            "variant": "codex", "entrypoint": "bin/codex", "execServer": "bin/codex-exec-server",
+            "variant": "codex", "entrypoint": f"bin/codex{suffix}", "execServer": f"bin/codex-exec-server{suffix}",
             "resourcesDir": "codex-resources", "pathDir": "codex-path",
         }
         files = {
-            "bin/codex": b"upstream codex", "bin/codex-code-mode-host": b"signed host",
-            "bin/codex-exec-server": b"signed executor", "codex-path/rg": b"ripgrep",
+            f"bin/codex{suffix}": b"upstream codex", f"bin/codex-code-mode-host{suffix}": b"signed host",
+            f"bin/codex-exec-server{suffix}": b"signed executor", f"codex-path/rg{suffix}": b"ripgrep",
             "codex-resources/bwrap": b"upstream bwrap",
-            "codex-resources/voice/bin/codex-voice-host": b"signed voice helper",
+            f"codex-resources/voice/bin/codex-voice-host{suffix}": b"signed voice helper",
             "codex-resources/voice/lib/gstreamer.so": b"native runtime",
             "codex-resources/voice/runtime.json": json.dumps({"sourceCommit": commit}).encode(),
         }
+        if suffix:
+            for name in ["codex-command-runner", "codex-windows-sandbox-setup"]:
+                files[f"codex-resources/{name}{suffix}"] = b"signed sandbox helper"
         for name, contents in files.items():
             path = package / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +205,7 @@ class ForkReleaseTests(unittest.TestCase):
         voice = {
             "schemaVersion": 1, "buildCommit": commit, "appVersion": "0.167.0",
             "appTarget": resource_target, "voiceTarget": target,
-            "sha256": {name: release.digest(package / name) for name in files if name == "bin/codex" or "/voice/" in name},
+            "sha256": {name: release.digest(package / name) for name in files if name == metadata["entrypoint"] or (executor_inventory and name == metadata["execServer"]) or "/voice/" in name},
         }
         release.write_json(package / "codex-package.json", metadata)
         release.write_json(package / "codex-resources/voice/manifest.json", voice)
@@ -212,7 +218,7 @@ class ForkReleaseTests(unittest.TestCase):
         return package, files
 
     def test_prepare_downloads_verified_musl_resources_for_each_gnu_target(self):
-        for target in release.TARGETS[:2]:
+        for target in (target for target in release.TARGETS if target.endswith("-linux-gnu")):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 fixture, _ = self.make_package(root, target)
@@ -246,31 +252,76 @@ class ForkReleaseTests(unittest.TestCase):
                 self.assertEqual(provenance["upstreamTarget"], release.upstream_target(target))
                 self.assertIn("CODEX_BWRAP_SHA256=", (root / "env").read_text())
 
-    def test_overlay_preserves_helpers_and_records_both_build_identities(self):
+    def test_overlay_rebuilds_cli_and_executor_and_preserves_other_helpers(self):
+        for target in release.TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                package, files = self.make_package(root, target)
+                binary, executor = root / "codex", root / "executor"
+                binary.write_bytes(b"fork codex")
+                executor.write_bytes(b"fork executor")
+                suffix = ".exe" if "windows" in target else ""
+                rebuilt = {f"bin/codex{suffix}": binary, f"bin/codex-exec-server{suffix}": executor}
+                archive = release.assemble(package, binary, executor, root / "dist")
+                extracted = root / "extracted"
+                release.extract_package(archive, extracted)
+                for name, original in files.items():
+                    self.assertEqual((extracted / name).read_bytes(), rebuilt[name].read_bytes() if name in rebuilt else original)
+                metadata = json.loads((extracted / "codex-package.json").read_text())
+                self.assertEqual(metadata["version"], "0.167.0-fork.bbbbbbbb")
+                self.assertEqual(metadata["target"], target)
+                self.assertEqual(metadata["upstreamTarget"], release.upstream_target(target))
+                if "linux" in target:
+                    self.assertEqual(metadata["minimumGlibc"], "2.38")
+                self.assertEqual(archive.name, f"codex-package-{target}.tar.gz")
+                voice = json.loads((extracted / "codex-resources/voice/manifest.json").read_text())
+                self.assertEqual(voice["buildCommit"], "a" * 40)
+                self.assertEqual(voice["appBuildCommit"], "b" * 40)
+                self.assertEqual(voice["appTarget"], target)
+                self.assertEqual(voice["voiceTarget"], target)
+                provenance = json.loads((extracted / "fork-build.json").read_text())
+                self.assertEqual(provenance["entrypointSha256"], release.digest(binary))
+                self.assertEqual(provenance["execServerSha256"], release.digest(executor))
+                self.assertEqual(set(provenance["rebuiltBinaries"]), set(rebuilt))
+                for name, source in rebuilt.items():
+                    self.assertEqual(voice["sha256"][name], release.digest(source))
+                    self.assertEqual(provenance["rebuiltBinaries"][name], {"sha256": release.digest(source), "buildCommit": "b" * 40})
+                    self.assertNotIn(name, provenance["upstreamFiles"])
+                for name in set(files) - set(rebuilt):
+                    self.assertEqual(provenance["upstreamFiles"][name], release.digest(extracted / name))
+
+    def test_overlay_requires_a_fork_executor_before_replacing_any_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             package, files = self.make_package(root)
             binary = root / "codex"
             binary.write_bytes(b"fork codex")
-            archive = release.assemble(package, binary, root / "dist")
+            with self.assertRaisesRegex(ValueError, "Missing or unsafe fork binary"):
+                release.assemble(package, binary, root / "missing-executor", root / "dist")
+            for name, original in files.items():
+                self.assertEqual((package / name).read_bytes(), original)
+
+    def test_overlay_accepts_inventory_without_optional_executor_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, _ = self.make_package(root, executor_inventory=False)
+            binary, executor = root / "codex", root / "executor"
+            binary.write_bytes(b"fork codex")
+            executor.write_bytes(b"fork executor")
+            archive = release.assemble(package, binary, executor, root / "dist")
             extracted = root / "extracted"
             release.extract_package(archive, extracted)
-            for name, original in files.items():
-                if name != "bin/codex":
-                    self.assertEqual((extracted / name).read_bytes(), original)
-            self.assertEqual((extracted / "bin/codex").read_bytes(), b"fork codex")
-            metadata = json.loads((extracted / "codex-package.json").read_text())
-            self.assertEqual(metadata["version"], "0.167.0-fork.bbbbbbbb")
-            self.assertEqual(metadata["target"], "x86_64-unknown-linux-gnu")
-            self.assertEqual(metadata["upstreamTarget"], "x86_64-unknown-linux-musl")
-            self.assertEqual(metadata["minimumGlibc"], "2.38")
-            self.assertEqual(archive.name, "codex-package-x86_64-unknown-linux-gnu.tar.gz")
             voice = json.loads((extracted / "codex-resources/voice/manifest.json").read_text())
-            self.assertEqual(voice["buildCommit"], "a" * 40)
-            self.assertEqual(voice["appBuildCommit"], "b" * 40)
-            self.assertEqual(voice["appTarget"], "x86_64-unknown-linux-gnu")
-            self.assertEqual(voice["voiceTarget"], "x86_64-unknown-linux-gnu")
-            self.assertEqual(voice["sha256"]["bin/codex"], release.digest(binary))
+            self.assertNotIn("bin/codex-exec-server", voice["sha256"])
+            self.assertEqual((extracted / "bin/codex-exec-server").read_bytes(), executor.read_bytes())
+
+    def test_assemble_command_requires_executor_input(self):
+        result = subprocess.run([
+            sys.executable, str(Path(release.__file__)), "assemble",
+            "--package-dir", "unused", "--binary", "unused", "--output-dir", "unused",
+        ], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--exec-server-binary", result.stderr)
 
     def test_overlay_rejects_corrupted_upstream_resources(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -278,7 +329,7 @@ class ForkReleaseTests(unittest.TestCase):
             package, _ = self.make_package(root)
             (package / "codex-resources/voice/lib/gstreamer.so").write_bytes(b"corrupt")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                release.assemble(package, root / "unused", root / "dist")
+                release.assemble(package, root / "unused", root / "unused-executor", root / "dist")
 
     def test_upstream_archive_checksum_is_required(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -304,10 +355,17 @@ class ForkReleaseTests(unittest.TestCase):
     def test_publication_requires_all_platforms_and_keeps_releases_immutable(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            with self.assertRaisesRegex(ValueError, "six platform"):
+            with self.assertRaisesRegex(ValueError, "three platform"):
                 release.publish("rust-v0.167.0-fork.bbbbbbbb", directory)
             for target in release.TARGETS:
                 (directory / f"codex-package-{target}.tar.gz").write_bytes(b"fixture archive")
+            for target in release.TARGETS:
+                with self.subTest(missing=target):
+                    archive = directory / f"codex-package-{target}.tar.gz"
+                    archive.unlink()
+                    with self.assertRaisesRegex(ValueError, "three platform"):
+                        release.publish("rust-v0.167.0-fork.bbbbbbbb", directory)
+                    archive.write_bytes(b"fixture archive")
             with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
                 "fork_release.github_json", return_value={"draft": False}
             ), patch("fork_release.run", return_value="b" * 40), self.assertRaisesRegex(ValueError, "already published"):
@@ -328,7 +386,13 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertIn("--draft", publication[0])
             self.assertIn("--prerelease=false", publication[-1])
             self.assertIn("--latest=true", publication[-1])
-            self.assertEqual(len((directory / "codex-package_SHA256SUMS").read_text().splitlines()), 6)
+            checksums = (directory / "codex-package_SHA256SUMS").read_text().splitlines()
+            self.assertEqual({line.split()[1] for line in checksums}, {
+                "codex-package-x86_64-unknown-linux-gnu.tar.gz",
+                "codex-package-aarch64-apple-darwin.tar.gz",
+                "codex-package-x86_64-pc-windows-msvc.tar.gz",
+            })
+            self.assertEqual(len(checksums), 3)
 
     def test_latest_promotion_uses_ancestry_instead_of_suffix_order(self):
         for status, expected in [("ahead", True), ("identical", True), ("behind", False), ("diverged", False)]:

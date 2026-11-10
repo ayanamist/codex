@@ -37,6 +37,14 @@ missing policy also permits the frontmatter fallback.
 - `codex-rs/exec-server/src/discoverV2/capability_discoveries.rs`: resolves V2
   discovery for standalone and plugin skills before returning metadata.
 
+Release coverage was corrected on 2026-11-10 after auditing `17a0203a0b`: the
+workflow now builds and packages the fork's standalone `codex-exec-server` along
+with `codex`. The earlier CLI-only overlay left the standalone helper on the
+upstream implementation, so DiscoveryV2 callers missed the executor-side
+fallback. Packaging tests verify the replaced executor, and CI checks its fork
+version; runtime policy verification of the complete release remains separate.
+See the [executor packaging fix](release-management.md#standalone-executor-build-and-packaging-fix).
+
 ## Community evidence
 
 - [openai/codex#29989 — Support disable-model-invocation in SKILL.md](https://github.com/openai/codex/issues/29989)

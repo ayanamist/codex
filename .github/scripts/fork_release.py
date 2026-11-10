@@ -1,4 +1,4 @@
-"""Build fork release packages by replacing only an upstream package's Codex CLI."""
+"""Build fork packages by replacing the upstream CLI and standalone executor."""
 
 import argparse
 import hashlib
@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = "openai/codex"
 DOCUMENTATION_GLOBS = ("docs/**", "**/*.md", "**/*.mdx", "**/*.rst", "**/*.adoc", "**/*.mmd")
 TARGETS = (
-    "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin", "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
 )
 
 
@@ -322,21 +322,27 @@ def prepare(args: argparse.Namespace) -> None:
     emit(args.env_file, values)
 
 
-def assemble(package: Path, binary: Path, output: Path) -> Path:
+def assemble(package: Path, binary: Path, exec_server: Path, output: Path) -> Path:
     provenance_path = package / "fork-build.json"
     provenance = json.loads(provenance_path.read_text())
     base, version = parse_tag(f"rust-v{provenance['version']}")
     metadata = verify_upstream_package(package, base, provenance["upstreamTarget"], provenance["upstreamCommit"])
     entrypoint = metadata["entrypoint"]
+    executor = metadata["execServer"]
+    rebuilt = {entrypoint: binary, executor: exec_server}
+    for source in rebuilt.values():
+        if not source.is_file() or source.is_symlink():
+            raise ValueError(f"Missing or unsafe fork binary: {source}")
     voice_path = package / "codex-resources/voice/manifest.json"
-    mutable = {entrypoint, "codex-package.json", "codex-resources/voice/manifest.json"}
+    mutable = {*rebuilt, "codex-package.json", "codex-resources/voice/manifest.json"}
     original_files = provenance["upstreamFiles"]
     for relative, expected in original_files.items():
         if digest(package_file(package, relative)) != expected:
             raise ValueError(f"Upstream input changed before assembly: {relative}")
-    shutil.copyfile(binary, package / entrypoint)
-    if os.name != "nt":
-        (package / entrypoint).chmod(0o755)
+    for relative, source in rebuilt.items():
+        shutil.copyfile(source, package / relative)
+        if os.name != "nt":
+            (package / relative).chmod(0o755)
     metadata["version"] = version
     metadata["target"] = provenance["target"]
     metadata["upstreamTarget"] = provenance["upstreamTarget"]
@@ -351,13 +357,20 @@ def assemble(package: Path, binary: Path, output: Path) -> Path:
     voice["appBuildCommit"] = provenance["forkCommit"]
     voice["appVersion"] = version
     voice["appTarget"] = provenance["target"]
-    voice["sha256"][entrypoint] = digest(package / entrypoint)
+    for relative in rebuilt:
+        if relative == entrypoint or relative in voice["sha256"]:
+            voice["sha256"][relative] = digest(package / relative)
     write_json(voice_path, voice)
     for relative, expected in original_files.items():
         if relative not in mutable and digest(package_file(package, relative)) != expected:
             raise ValueError(f"Reused upstream file changed: {relative}")
     provenance["upstreamFiles"] = {name: value for name, value in original_files.items() if name not in mutable}
     provenance["entrypointSha256"] = digest(package / entrypoint)
+    provenance["execServerSha256"] = digest(package / executor)
+    provenance["rebuiltBinaries"] = {
+        relative: {"sha256": digest(package / relative), "buildCommit": provenance["forkCommit"]}
+        for relative in rebuilt
+    }
     write_json(provenance_path, provenance)
     output.mkdir(parents=True, exist_ok=True)
     archive_path = output / f"codex-package-{provenance['target']}.tar.gz"
@@ -371,7 +384,7 @@ def publish(tag: str, directory: Path) -> None:
     _, version = parse_tag(tag)
     archives = [directory / f"codex-package-{target}.tar.gz" for target in TARGETS]
     if any(not path.is_file() for path in archives):
-        raise ValueError("All six platform packages are required before publication")
+        raise ValueError("All three platform packages are required before publication")
     commit = run("git", "rev-parse", "HEAD")
     verify_tag_commit(tag, commit)
     repository = os.environ["GITHUB_REPOSITORY"]
@@ -396,8 +409,10 @@ def publish(tag: str, directory: Path) -> None:
     notes.write_text(
         f"Fork CLI {version}, based on [{UPSTREAM} rust-v{base}]"
         f"(https://github.com/{UPSTREAM}/releases/tag/rust-v{base}).\n\n"
-        f"Fork commit: [`{commit}`](https://github.com/{repository}/commit/{commit}). Only `codex` is rebuilt; "
-        "helpers and native voice resources are reused from the pinned upstream release.\n\n"
+        f"Fork commit: [`{commit}`](https://github.com/{repository}/commit/{commit}). "
+        "`codex` and `codex-exec-server` are rebuilt; other helpers and native voice "
+        "resources are reused from the pinned upstream release.\n\n"
+        "Packages are provided for Linux x64, macOS ARM64, and Windows x64.\n\n"
         "Linux packages require glibc 2.38 or newer; their CLI targets GNU Linux, "
         "with upstream helpers reused from the corresponding musl package.\n\n"
         "The fork executable does not carry OpenAI's signing identity. "
@@ -425,6 +440,7 @@ def main() -> None:
     assemble_parser = commands.add_parser("assemble")
     assemble_parser.add_argument("--package-dir", required=True, type=Path)
     assemble_parser.add_argument("--binary", required=True, type=Path)
+    assemble_parser.add_argument("--exec-server-binary", required=True, type=Path)
     assemble_parser.add_argument("--output-dir", required=True, type=Path)
     publish_parser = commands.add_parser("publish")
     publish_parser.add_argument("--tag", required=True)
@@ -435,7 +451,7 @@ def main() -> None:
     elif args.command == "prepare":
         prepare(args)
     elif args.command == "assemble":
-        print(assemble(args.package_dir, args.binary, args.output_dir))
+        print(assemble(args.package_dir, args.binary, args.exec_server_binary, args.output_dir))
     else:
         publish(args.tag, args.directory)
 
