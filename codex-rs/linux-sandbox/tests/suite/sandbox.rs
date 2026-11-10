@@ -948,6 +948,76 @@ printf protected"#,
 }
 
 #[tokio::test]
+async fn sandbox_reclaims_metadata_mount_targets_after_helper_is_killed() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let profile = PermissionProfile::workspace_write_with(
+        &[],
+        NetworkSandboxPolicy::Enabled,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    let profile_json = serde_json::to_string(&profile).expect("serialize profile");
+    let command = || {
+        let mut command = std::process::Command::new(codex_linux_sandbox_exe());
+        command
+            .arg("--sandbox-policy-cwd")
+            .arg(workspace.path())
+            .arg("--command-cwd")
+            .arg(workspace.path())
+            .arg("--permission-profile")
+            .arg(&profile_json)
+            .current_dir(workspace.path());
+        command
+    };
+    let run_true = || {
+        let output = command()
+            .args(["--", "/bin/true"])
+            .output()
+            .expect("run sandbox");
+        assert!(output.status.success(), "sandbox failed: {output:?}");
+        for name in [".git", ".agents", ".codex", ".aws"] {
+            assert!(!workspace.path().join(name).exists(), "leaked {name}");
+        }
+    };
+    run_true();
+
+    let mut helper = command()
+        .args(["--", "/bin/sh", "-c", "printf ready > ready; exec sleep 60"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start helper");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !workspace.path().join("ready").exists() {
+        if std::time::Instant::now() >= deadline
+            || helper.try_wait().expect("check helper").is_some()
+        {
+            let _ = helper.kill();
+            let output = helper.wait_with_output().expect("collect failed helper");
+            panic!("sandbox did not become ready: {output:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    helper.kill().expect("SIGKILL helper");
+    helper.wait().expect("reap killed helper");
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        assert!(workspace.path().join(name).is_dir(), "missing leak: {name}");
+    }
+
+    // A fresh helper must reclaim exactly the targets left by the killed one.
+    run_true();
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("ready")).expect("read user file"),
+        "ready"
+    );
+}
+
+#[tokio::test]
 async fn sandbox_blocks_codex_symlink_replacement_attack() {
     if should_skip_bwrap_tests().await {
         eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");

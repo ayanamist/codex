@@ -8,6 +8,7 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -44,6 +45,27 @@ const FORWARDED_SIGNALS: &[libc::c_int] =
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 const SYNTHETIC_MOUNT_MARKER_SYNTHETIC: &[u8] = b"synthetic\n";
 const SYNTHETIC_MOUNT_MARKER_EXISTING: &[u8] = b"existing\n";
+const SYNTHETIC_MOUNT_IDENTITY_FILE: &str = "identity.json";
+const SYNTHETIC_MOUNT_IDENTITY_TEMP_FILE: &str = "identity.tmp";
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SyntheticMountIdentity {
+    device: u64,
+    inode: u64,
+    change_time: i64,
+    change_time_nsec: i64,
+}
+
+impl SyntheticMountIdentity {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            change_time: metadata.ctime(),
+            change_time_nsec: metadata.ctime_nsec(),
+        }
+    }
+}
 
 #[derive(Debug)]
 struct SyntheticMountTargetRegistration {
@@ -736,6 +758,7 @@ fn register_synthetic_mount_targets(
                         marker_dir.display()
                     )
                 });
+                record_created_synthetic_mount_target(target, &marker_dir);
                 let target = if target.preserves_pre_existing_path()
                     && synthetic_mount_marker_dir_has_active_synthetic_owner(&marker_dir)
                 {
@@ -769,6 +792,67 @@ fn register_synthetic_mount_targets(
             })
             .collect()
     })
+}
+
+fn record_created_synthetic_mount_target(
+    target: &crate::bwrap::SyntheticMountTarget,
+    marker_dir: &Path,
+) {
+    if target.preserves_pre_existing_path() {
+        return;
+    }
+    // Create before launching bwrap so a later run can prove which object we
+    // own. A dead PID marker alone cannot distinguish a leak from user data
+    // created or replaced after that helper died.
+    let metadata = match target.kind() {
+        crate::bwrap::SyntheticMountTargetKind::EmptyFile => OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target.path())
+            .and_then(|file| file.metadata()),
+        crate::bwrap::SyntheticMountTargetKind::EmptyDirectory => {
+            fs::create_dir(target.path()).and_then(|()| fs::symlink_metadata(target.path()))
+        }
+    };
+    let Ok(metadata) = metadata else {
+        // Existing paths (including concurrent owners) must not be claimed.
+        // Let bwrap handle other creation errors as it did before.
+        return;
+    };
+    let identity = SyntheticMountIdentity::from_metadata(&metadata);
+    let contents = serde_json::to_vec(&identity).expect("serialize synthetic mount identity");
+    // A killed writer must not leave a partial identity that breaks later runs.
+    let temporary_path = marker_dir.join(SYNTHETIC_MOUNT_IDENTITY_TEMP_FILE);
+    fs::write(&temporary_path, contents)
+        .and_then(|()| {
+            fs::rename(
+                &temporary_path,
+                marker_dir.join(SYNTHETIC_MOUNT_IDENTITY_FILE),
+            )
+        })
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to record synthetic bubblewrap mount identity {}: {err}",
+                target.path().display()
+            )
+        });
+}
+
+fn read_synthetic_mount_identity(marker_dir: &Path) -> Option<SyntheticMountIdentity> {
+    let path = marker_dir.join(SYNTHETIC_MOUNT_IDENTITY_FILE);
+    match fs::read(&path) {
+        Ok(contents) => Some(serde_json::from_slice(&contents).unwrap_or_else(|err| {
+            panic!(
+                "failed to parse synthetic bubblewrap mount identity {}: {err}",
+                path.display()
+            )
+        })),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => panic!(
+            "failed to read synthetic bubblewrap mount identity {}: {err}",
+            path.display()
+        ),
+    }
 }
 
 fn synthetic_mount_marker_contents(target: &crate::bwrap::SyntheticMountTarget) -> &'static [u8] {
@@ -859,7 +943,21 @@ fn cleanup_synthetic_mount_targets(targets: &[SyntheticMountTargetRegistration])
             if synthetic_mount_marker_dir_has_active_process(&target.marker_dir) {
                 continue;
             }
-            remove_synthetic_mount_target(&target.target);
+            let identity = read_synthetic_mount_identity(&target.marker_dir);
+            remove_synthetic_mount_target(&target.target, identity.as_ref());
+            for name in [
+                SYNTHETIC_MOUNT_IDENTITY_FILE,
+                SYNTHETIC_MOUNT_IDENTITY_TEMP_FILE,
+            ] {
+                match fs::remove_file(target.marker_dir.join(name)) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => panic!(
+                        "failed to remove synthetic bubblewrap mount identity {}: {err}",
+                        target.target.path().display()
+                    ),
+                }
+            }
             match fs::remove_dir(&target.marker_dir) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -873,7 +971,10 @@ fn cleanup_synthetic_mount_targets(targets: &[SyntheticMountTargetRegistration])
     });
 }
 
-fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
+fn remove_synthetic_mount_target(
+    target: &crate::bwrap::SyntheticMountTarget,
+    identity: Option<&SyntheticMountIdentity>,
+) {
     let path = target.path();
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -883,7 +984,22 @@ fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
             path.display()
         ),
     };
-    if !target.should_remove_after_bwrap(&metadata) {
+    // Keep the empty-object checks even with an identity match: timestamps on
+    // some filesystems are too coarse to distinguish closely spaced writes.
+    let matches_empty_target = match target.kind() {
+        crate::bwrap::SyntheticMountTargetKind::EmptyFile => {
+            metadata.file_type().is_file() && metadata.len() == 0
+        }
+        crate::bwrap::SyntheticMountTargetKind::EmptyDirectory => metadata.file_type().is_dir(),
+    };
+    if !matches_empty_target {
+        return;
+    }
+    let should_remove = match identity {
+        Some(identity) => *identity == SyntheticMountIdentity::from_metadata(&metadata),
+        None => target.should_remove_after_bwrap(&metadata),
+    };
+    if !should_remove {
         return;
     }
     match target.kind() {

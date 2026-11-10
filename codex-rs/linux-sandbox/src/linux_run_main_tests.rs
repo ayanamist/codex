@@ -419,7 +419,7 @@ fn cleanup_synthetic_mount_targets_removes_transient_file_after_concurrent_owner
     let first_target = crate::bwrap::SyntheticMountTarget::missing(&empty_file);
 
     let first_registrations = register_synthetic_mount_targets(&[first_target]);
-    std::fs::write(&empty_file, "").expect("write transient empty file");
+    assert!(empty_file.exists(), "registration creates the mount target");
     let active_marker = first_registrations[0].marker_dir.join("1");
     std::fs::write(&active_marker, SYNTHETIC_MOUNT_MARKER_SYNTHETIC).expect("write active marker");
     let metadata = std::fs::symlink_metadata(&empty_file).expect("stat empty file");
@@ -434,6 +434,218 @@ fn cleanup_synthetic_mount_targets_removes_transient_file_after_concurrent_owner
     cleanup_synthetic_mount_targets(&second_registrations);
 
     assert!(!empty_file.exists());
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_reclaims_directories_after_owner_is_killed() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        // Simulate bubblewrap materializing its mount points on the host.
+        std::fs::create_dir_all(workspace.path().join(name)).expect("create mount point");
+    }
+    abandon_synthetic_mount_registrations(&registrations);
+
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+
+    let remaining: Vec<_> = [".git", ".agents", ".codex", ".aws"]
+        .into_iter()
+        .filter(|name| workspace.path().join(name).exists())
+        .collect();
+    assert_eq!(remaining, Vec::<&str>::new(), "leaked mount points");
+}
+
+fn workspace_synthetic_mount_targets(path: &Path) -> Vec<crate::bwrap::SyntheticMountTarget> {
+    let policy = FileSystemSandboxPolicy::workspace_write(&[], true, true);
+    build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &policy,
+        path,
+        path,
+        BwrapOptions::default(),
+    )
+    .expect("build workspace sandbox")
+    .synthetic_mount_targets
+}
+
+fn abandon_synthetic_mount_registrations(registrations: &[SyntheticMountTargetRegistration]) {
+    let mut owner = std::process::Command::new("/bin/sh")
+        .args(["-c", "kill -KILL $$"])
+        .spawn()
+        .expect("spawn owner");
+    let owner_pid = owner.id();
+    assert!(!owner.wait().expect("wait for killed owner").success());
+    // Leave exactly the registry state of a helper killed before cleanup.
+    for registration in registrations {
+        std::fs::rename(
+            &registration.marker_file,
+            registration.marker_dir.join(owner_pid.to_string()),
+        )
+        .expect("abandon owner marker");
+    }
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_reclaims_file_after_owner_is_killed() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let path = workspace.path().join("blocked");
+    let registrations =
+        register_synthetic_mount_targets(&[crate::bwrap::SyntheticMountTarget::missing(&path)]);
+    assert!(path.exists());
+    abandon_synthetic_mount_registrations(&registrations);
+
+    let metadata = std::fs::symlink_metadata(&path).expect("stat mount target");
+    let registrations = register_synthetic_mount_targets(&[
+        crate::bwrap::SyntheticMountTarget::existing_empty_file(&path, &metadata),
+    ]);
+    cleanup_synthetic_mount_targets(&registrations);
+    assert!(!path.exists());
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_preserves_unrecorded_directory_after_owner_is_killed() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let path = workspace.path().join(".agents");
+    // Simulate an old helper killed before bwrap created its mount target.
+    let marker_dir = synthetic_mount_marker_dir(&path);
+    std::fs::create_dir_all(&marker_dir).expect("create marker directory");
+    std::fs::write(
+        marker_dir.join(std::process::id().to_string()),
+        SYNTHETIC_MOUNT_MARKER_SYNTHETIC,
+    )
+    .expect("write legacy marker");
+    abandon_synthetic_mount_registrations(&[SyntheticMountTargetRegistration {
+        target: crate::bwrap::SyntheticMountTarget::missing_empty_directory(&path),
+        marker_file: marker_dir.join(std::process::id().to_string()),
+        marker_dir,
+    }]);
+    std::fs::create_dir(&path).expect("create real directory after owner died");
+
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    assert!(path.exists());
+}
+
+#[test_case::test_case(false; "directory")]
+#[test_case::test_case(true; "file")]
+fn cleanup_synthetic_mount_targets_preserves_replacement_after_owner_is_killed(file: bool) {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let path = workspace.path().join(".agents");
+    let target = if file {
+        crate::bwrap::SyntheticMountTarget::missing(&path)
+    } else {
+        crate::bwrap::SyntheticMountTarget::missing_empty_directory(&path)
+    };
+    let registrations = register_synthetic_mount_targets(&[target]);
+    abandon_synthetic_mount_registrations(&registrations);
+    // Keep the old inode allocated so this test does not depend on inode reuse.
+    std::fs::rename(&path, workspace.path().join("old-target")).expect("move leaked target");
+    if file {
+        std::fs::write(&path, "").expect("create real empty file");
+    } else {
+        std::fs::create_dir(&path).expect("create real empty directory");
+    }
+
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    assert!(path.exists());
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_preserves_modified_directory_after_owner_is_killed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let path = workspace.path().join(".agents");
+    let registrations = register_synthetic_mount_targets(&[
+        crate::bwrap::SyntheticMountTarget::missing_empty_directory(&path),
+    ]);
+    let identity = read_synthetic_mount_identity(&registrations[0].marker_dir)
+        .expect("recorded mount identity");
+    abandon_synthetic_mount_registrations(&registrations);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("change directory permissions");
+    let metadata = std::fs::symlink_metadata(&path).expect("stat modified directory");
+    assert_ne!(identity, SyntheticMountIdentity::from_metadata(&metadata));
+
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    assert!(path.exists());
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_preserves_real_pre_existing_directories() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        std::fs::create_dir(workspace.path().join(name)).expect("create real directory");
+    }
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    abandon_synthetic_mount_registrations(&registrations);
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        assert!(workspace.path().join(name).exists(), "preserve {name}");
+    }
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_waits_for_live_owner_before_reclaiming_leak() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    abandon_synthetic_mount_registrations(&registrations);
+    let active_marker = registrations[0].marker_dir.join("1");
+    std::fs::write(&active_marker, SYNTHETIC_MOUNT_MARKER_SYNTHETIC).expect("write live marker");
+
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    let live_target = registrations
+        .iter()
+        .find(|registration| registration.marker_dir.join("1") == active_marker)
+        .expect("live target");
+    assert!(live_target.target.path().exists());
+
+    std::fs::remove_file(active_marker).expect("remove live marker");
+    let targets = workspace_synthetic_mount_targets(workspace.path());
+    let registrations = register_synthetic_mount_targets(&targets);
+    cleanup_synthetic_mount_targets(&registrations);
+    assert!(!live_target.target.path().exists());
+}
+
+#[test]
+fn cleanup_synthetic_mount_targets_preserves_nonempty_file_even_with_matching_identity() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let path = workspace.path().join("blocked");
+    let registrations =
+        register_synthetic_mount_targets(&[crate::bwrap::SyntheticMountTarget::missing(&path)]);
+    std::fs::write(&path, "user data").expect("write user data");
+    // Model a filesystem whose timestamp precision cannot distinguish the
+    // creation from the write: identity equality must never authorize deleting
+    // a nonempty file.
+    let identity = SyntheticMountIdentity::from_metadata(
+        &std::fs::symlink_metadata(&path).expect("stat user file"),
+    );
+    std::fs::write(
+        registrations[0]
+            .marker_dir
+            .join(SYNTHETIC_MOUNT_IDENTITY_FILE),
+        serde_json::to_vec(&identity).expect("serialize identity"),
+    )
+    .expect("model matching identity");
+    cleanup_synthetic_mount_targets(&registrations);
+    assert_eq!(
+        std::fs::read_to_string(path).expect("read user file"),
+        "user data"
+    );
 }
 
 #[test]

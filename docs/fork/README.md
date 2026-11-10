@@ -1,5 +1,10 @@
 # Fork notes
 
+- [Linux sandbox empty mount targets](sandbox-mount-targets.md): known upstream
+  issue, host directory creation, interrupted cleanup, identity-based recovery,
+  user data protection, and verification. Keywords: Linux, bubblewrap, bwrap,
+  empty directory, `.agents`, `.aws`, `.codex`, `.git`, SIGKILL, inode, cleanup.
+  Investigated: 2026-11-10.
 - [Fork release management](release-management.md): rebuilding only the Codex
   entrypoint, reusing pinned upstream helpers, V8 and voice constraints, version
   sources, automatic commit-based releases on code pushes, documentation-only
