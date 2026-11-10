@@ -2,11 +2,11 @@
 
 Scope: `ayanamist/codex`, reviewed on 2026-11-10 against workspace version
 `0.167.0` and the accompanying fork changes.
-Keywords: GitHub Actions, fork, upstream package, release, voice, version.
+Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc, GNU.
 
 Only [`rust-release.yml`](rust-release.yml) remains. Pushing to `fork-release`
 automatically selects a tag such as `rust-v0.167.0-ayanamist.1`, builds the
-fork's `codex` entrypoint for Linux musl, macOS, and Windows on x86_64 and ARM64,
+fork's `codex` entrypoint for Linux GNU/glibc, macOS, and Windows on x86_64 and ARM64,
 and publishes a stable release. Manual tag creation is unnecessary. A manual
 `workflow_dispatch` on `fork-release` provides a recovery entry point.
 
@@ -18,7 +18,7 @@ the selected tag to its later jobs directly, using the built-in `GITHUB_TOKEN`.
 
 The workflow verifies that the corresponding `openai/codex` stable release
 exists and its tag commit is an ancestor of the fork commit. It downloads each
-platform's official package and verifies the archive checksum, package identity,
+platform's official package (the same-architecture musl package for Linux) and verifies the archive checksum, package identity,
 voice resource inventory, and upstream voice commit before building. It uses
 that package's bwrap digest when compiling Linux Codex and passes the upstream
 voice commit separately from the actual fork build commit.
@@ -27,6 +27,13 @@ Only `codex-cli --bin codex` is built. Code-mode host, exec-server, voice helper
 native voice runtime, ripgrep, and platform sandbox helpers are reused from the
 pinned upstream package. Packaging verifies that reused file contents are
 unchanged. V8, lint tools, and separate app-server binaries are not built here.
+
+Linux CLI builds use Ubuntu 22.04 runners (glibc 2.35) to support glibc 2.38
+and newer. GNU output metadata records the upstream musl resource target
+separately. Before upload, every packaged ELF file is checked for GLIBC imports
+above 2.38, including the reused voice runtime and helpers. The Unix installer
+selects the GNU archives. See the [compatibility contract](../../docs/fork/release-management.md#linux-glibc-238-compatibility)
+for evidence and runtime verification limits.
 
 The fork version is written to Cargo.toml and workspace Cargo.lock entries in
 the CI checkout. The integration branch keeps the original upstream version,
@@ -53,6 +60,7 @@ Local validation:
 ```sh
 actionlint -oneline .github/workflows/rust-release.yml
 python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py
 python3 -m unittest discover -s .github/scripts -p test_releases.py
 python3 scripts/install/test_install_sh.py
 git diff --check

@@ -1,5 +1,7 @@
+import argparse
 import json
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -140,12 +142,12 @@ class ForkReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.extract_package(archive, root / "package")
 
-    def make_package(self, root):
+    def make_package(self, root, target=release.TARGETS[0]):
         package = root / "package"
-        target = release.TARGETS[0]
+        resource_target = release.upstream_target(target)
         commit = "a" * 40
         metadata = {
-            "layoutVersion": 1, "version": "0.167.0", "target": target,
+            "layoutVersion": 1, "version": "0.167.0", "target": resource_target,
             "variant": "codex", "entrypoint": "bin/codex", "execServer": "bin/codex-exec-server",
             "resourcesDir": "codex-resources", "pathDir": "codex-path",
         }
@@ -163,6 +165,7 @@ class ForkReleaseTests(unittest.TestCase):
             path.write_bytes(contents)
         voice = {
             "schemaVersion": 1, "buildCommit": commit, "appVersion": "0.167.0",
+            "appTarget": resource_target, "voiceTarget": target,
             "sha256": {name: release.digest(package / name) for name in files if name == "bin/codex" or "/voice/" in name},
         }
         release.write_json(package / "codex-package.json", metadata)
@@ -170,9 +173,45 @@ class ForkReleaseTests(unittest.TestCase):
         release.write_json(package / "fork-build.json", {
             "version": "0.167.0-ayanamist.2", "upstreamTag": "rust-v0.167.0",
             "upstreamCommit": commit, "forkCommit": "b" * 40, "target": target,
+            "upstreamTarget": resource_target,
             "upstreamFiles": {path.relative_to(package).as_posix(): release.digest(path) for path in package.rglob("*") if path.is_file()},
         })
         return package, files
+
+    def test_prepare_downloads_verified_musl_resources_for_each_gnu_target(self):
+        for target in release.TARGETS[:2]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fixture, _ = self.make_package(root, target)
+                source = root / "fixture.tar.gz"
+                with tarfile.open(source, "w:gz") as archive:
+                    for path in fixture.iterdir():
+                        if path.name != "fork-build.json":
+                            archive.add(path, arcname=path.name)
+
+                def download(*args):
+                    if args[0] == "git":
+                        return "b" * 40
+                    self.assertEqual(args[:3], ("gh", "release", "download"))
+                    name = f"codex-package-{release.upstream_target(target)}.tar.gz"
+                    self.assertIn(name, args)
+                    directory = Path(args[-1])
+                    shutil.copyfile(source, directory / name)
+                    (directory / "codex-package_SHA256SUMS").write_text(
+                        f"{release.digest(source)}  {name}\n"
+                    )
+                    return ""
+
+                destination = root / "prepared"
+                with patch("fork_release.run", side_effect=download), patch("fork_release.set_workspace_version"):
+                    release.prepare(argparse.Namespace(
+                        tag="rust-v0.167.0-ayanamist.2", upstream_commit="a" * 40,
+                        target=target, package_dir=destination, env_file=root / "env",
+                    ))
+                provenance = json.loads((destination / "fork-build.json").read_text())
+                self.assertEqual(provenance["target"], target)
+                self.assertEqual(provenance["upstreamTarget"], release.upstream_target(target))
+                self.assertIn("CODEX_BWRAP_SHA256=", (root / "env").read_text())
 
     def test_overlay_preserves_helpers_and_records_both_build_identities(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -189,9 +228,15 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertEqual((extracted / "bin/codex").read_bytes(), b"fork codex")
             metadata = json.loads((extracted / "codex-package.json").read_text())
             self.assertEqual(metadata["version"], "0.167.0-ayanamist.2")
+            self.assertEqual(metadata["target"], "x86_64-unknown-linux-gnu")
+            self.assertEqual(metadata["upstreamTarget"], "x86_64-unknown-linux-musl")
+            self.assertEqual(metadata["minimumGlibc"], "2.38")
+            self.assertEqual(archive.name, "codex-package-x86_64-unknown-linux-gnu.tar.gz")
             voice = json.loads((extracted / "codex-resources/voice/manifest.json").read_text())
             self.assertEqual(voice["buildCommit"], "a" * 40)
             self.assertEqual(voice["appBuildCommit"], "b" * 40)
+            self.assertEqual(voice["appTarget"], "x86_64-unknown-linux-gnu")
+            self.assertEqual(voice["voiceTarget"], "x86_64-unknown-linux-gnu")
             self.assertEqual(voice["sha256"]["bin/codex"], release.digest(binary))
 
     def test_overlay_rejects_corrupted_upstream_resources(self):

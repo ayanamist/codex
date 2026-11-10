@@ -58,6 +58,9 @@ The fork release pipeline now publishes numbered versions such as
 checks recognize the fork revision. Pushing `fork-release` now allocates the
 tag and publishes automatically. See [release management](release-management.md)
 for rebuilding only the fork entrypoint while reusing pinned upstream helpers.
+Linux standalone installs select the fork's `*-unknown-linux-gnu` packages,
+which support glibc 2.38 and newer; the release workflow validates imported
+GLIBC symbol versions across the entire package before publication.
 
 The default channel requires a published stable release with a `rust-v<VERSION>`
 tag and the assets produced by

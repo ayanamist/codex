@@ -18,10 +18,15 @@ ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = "openai/codex"
 FORK_TAG = re.compile(r"rust-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-ayanamist\.([1-9][0-9]*)")
 TARGETS = (
-    "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin", "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
 )
+
+
+def upstream_target(target: str) -> str:
+    # Upstream publishes Linux helper bundles only under the musl triples.
+    return target.removesuffix("-gnu") + "-musl" if target.endswith("-linux-gnu") else target
 
 
 def run(*args: str, cwd: Path = ROOT) -> str:
@@ -265,14 +270,15 @@ def prepare(args: argparse.Namespace) -> None:
     base, version = parse_tag(args.tag)
     if not re.fullmatch(r"[0-9a-f]{40}", args.upstream_commit):
         raise ValueError("A full upstream commit is required")
+    resource_target = upstream_target(args.target)
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
-        archive = directory / f"codex-package-{args.target}.tar.gz"
+        archive = directory / f"codex-package-{resource_target}.tar.gz"
         run("gh", "release", "download", f"rust-v{base}", "--repo", UPSTREAM,
             "--pattern", archive.name, "--pattern", "codex-package_SHA256SUMS", "--dir", str(directory))
         verify_archive(archive, directory / "codex-package_SHA256SUMS")
         extract_package(archive, args.package_dir)
-    verify_upstream_package(args.package_dir, base, args.target, args.upstream_commit)
+    verify_upstream_package(args.package_dir, base, resource_target, args.upstream_commit)
     # Record every reused file before replacement, including resource signatures.
     upstream_files = {
         path.relative_to(args.package_dir).as_posix(): digest(path)
@@ -281,7 +287,7 @@ def prepare(args: argparse.Namespace) -> None:
     write_json(args.package_dir / "fork-build.json", {
         "version": version, "upstreamTag": f"rust-v{base}",
         "upstreamCommit": args.upstream_commit, "forkCommit": run("git", "rev-parse", "HEAD"),
-        "target": args.target, "upstreamFiles": upstream_files,
+        "target": args.target, "upstreamTarget": resource_target, "upstreamFiles": upstream_files,
     })
     values = {
         "CODEX_VOICE_HELPER_COMMIT": args.upstream_commit,
@@ -298,7 +304,7 @@ def assemble(package: Path, binary: Path, output: Path) -> Path:
     provenance_path = package / "fork-build.json"
     provenance = json.loads(provenance_path.read_text())
     base, version = parse_tag(f"rust-v{provenance['version']}")
-    metadata = verify_upstream_package(package, base, provenance["target"], provenance["upstreamCommit"])
+    metadata = verify_upstream_package(package, base, provenance["upstreamTarget"], provenance["upstreamCommit"])
     entrypoint = metadata["entrypoint"]
     voice_path = package / "codex-resources/voice/manifest.json"
     mutable = {entrypoint, "codex-package.json", "codex-resources/voice/manifest.json"}
@@ -310,6 +316,10 @@ def assemble(package: Path, binary: Path, output: Path) -> Path:
     if os.name != "nt":
         (package / entrypoint).chmod(0o755)
     metadata["version"] = version
+    metadata["target"] = provenance["target"]
+    metadata["upstreamTarget"] = provenance["upstreamTarget"]
+    if provenance["target"].endswith("-linux-gnu"):
+        metadata["minimumGlibc"] = "2.38"
     metadata["upstreamTag"] = provenance["upstreamTag"]
     metadata["upstreamCommit"] = provenance["upstreamCommit"]
     metadata["buildCommit"] = provenance["forkCommit"]
@@ -318,6 +328,7 @@ def assemble(package: Path, binary: Path, output: Path) -> Path:
     # buildCommit continues to identify the unchanged upstream voice helper.
     voice["appBuildCommit"] = provenance["forkCommit"]
     voice["appVersion"] = version
+    voice["appTarget"] = provenance["target"]
     voice["sha256"][entrypoint] = digest(package / entrypoint)
     write_json(voice_path, voice)
     for relative, expected in original_files.items():
@@ -358,6 +369,8 @@ def publish(tag: str, directory: Path) -> None:
         f"(https://github.com/{UPSTREAM}/releases/tag/rust-v{base}).\n\n"
         f"Fork commit: `{run('git', 'rev-parse', 'HEAD')}`. Only `codex` is rebuilt; "
         "helpers and native voice resources are reused from the pinned upstream release.\n\n"
+        "Linux packages require glibc 2.38 or newer; their CLI targets GNU Linux, "
+        "with upstream helpers reused from the corresponding musl package.\n\n"
         "The fork executable does not carry OpenAI's signing identity. "
         "macOS builds use an ad hoc signature.\n", encoding="utf-8",
     )

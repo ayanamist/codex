@@ -3,7 +3,9 @@
 Scope: the `ayanamist/codex` fork on `fork-release`, investigated and implemented
 on 2026-11-10 against `11f857b31e`, upstream `rust-v0.167.0`, workspace version
 `0.167.0`, plus the accompanying uncommitted fork release changes.
-Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer.
+Linux glibc compatibility was updated on 2026-11-10 against `f146e4071a`,
+workspace version `0.167.0`, plus the accompanying changes.
+Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer, glibc, GNU.
 
 ## Release procedure
 
@@ -75,7 +77,7 @@ The single [release workflow](../../.github/workflows/rust-release.yml) invokes
 1. `resolve`: identify the exact upstream stable tag/commit and Rust toolchain;
    allocate or resume the automatic fork tag after validation, or skip a
    superseded/already published commit.
-2. `prepare`: download `codex-package-<target>.tar.gz` and its official checksum
+2. `prepare`: download `codex-package-<upstream-target>.tar.gz` and its official checksum
    manifest from `openai/codex`; verify the archive, package metadata, voice
    inventory, and runtime commit; stamp the full fork version in the isolated
    CI checkout and export build inputs.
@@ -88,7 +90,7 @@ The single [release workflow](../../.github/workflows/rust-release.yml) invokes
    draft can be retried. The first release handles an absent latest channel;
    API failures other than HTTP 404 remain failures.
 
-Linux musl, macOS, and Windows packages are built for x86_64 and ARM64 using
+Linux GNU/glibc, macOS, and Windows packages are built for x86_64 and ARM64 using
 standard GitHub-hosted runners. Cargo builds only:
 
 ```sh
@@ -110,6 +112,62 @@ On Linux, [`bundled_bwrap.rs`](../../codex-rs/linux-sandbox/src/bundled_bwrap.rs
 checks the bundled bwrap against a digest embedded in Codex. `prepare` computes
 `CODEX_BWRAP_SHA256` from the exact downloaded resource before compilation.
 No later operation strips or changes bwrap.
+
+## Linux glibc 2.38 compatibility
+
+The fork's Linux packages target `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`, with glibc 2.38 as the supported runtime floor.
+They build natively on `ubuntu-22.04` and `ubuntu-22.04-arm`.
+[GitHub lists both runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners);
+[Ubuntu 22.04 supplies glibc 2.35](https://packages.ubuntu.com/jammy/libc6),
+which keeps CLI imports below the 2.38 compatibility ceiling. The workflow
+installs ordinary GNU build dependencies and no longer invokes Zig or the
+musl/OpenSSL toolchain setup. This does not promise support below glibc 2.38.
+
+`fork_release.py` maps each Linux GNU target to the corresponding upstream
+musl package **only for resource acquisition and original-package validation**.
+The output archive, `codex-package.json.target`, and voice manifest `appTarget`
+identify the actual GNU CLI. Package metadata records `minimumGlibc: "2.38"`;
+both package metadata and `fork-build.json` record `upstreamTarget` separately.
+The original voice runtime target, commit, receipts, and helper bytes remain
+unchanged. Other platforms retain their original target mapping.
+
+The Unix installer selects GNU archives for Linux. Its retired-release cleanup
+recognizes both GNU and older musl directory names. Legacy npm archives retain
+their musl vendor-directory mapping. Daemon staging already selects GNU targets
+for a GNU CLI in `app-server-daemon/src/prepare_install.rs`.
+
+After assembly, [`check_linux_glibc.py`](../../.github/scripts/check_linux_glibc.py)
+uses `readelf --version-info --wide` on every ELF file, including nested voice
+libraries and reused helpers. It rejects imported GLIBC versions newer than
+2.38, private/unknown glibc ABI requirements, and a package with no ELF files.
+Version definitions are ignored; `GLIBC_ABI_DT_RELR` is treated as requiring
+2.36. Failure prevents artifact upload and publication. CLI and voice helper
+identity smoke checks also run on the older build runner.
+
+On 2026-11-10, both actual upstream `rust-v0.167.0` Linux archives were downloaded
+and verified against the release's `codex-package_SHA256SUMS`. Each contained
+32 ELF files; both passed the checker, and the highest required GLIBC version
+was 2.28. These results establish the imported-symbol ceiling for the reused
+resources at this pinned version. The rebuilt GNU CLI still needs its first
+Ubuntu 22.04 Actions build and package check. No complete release run, glibc
+2.38 runtime execution, or audio-device/network session was performed here;
+symbol checks do not establish kernel, CPU, or other shared-library compatibility.
+
+Local checks for this change passed: 18 release-script tests, 4 glibc-checker
+tests (including real versioned ELF providers/consumers), and 20 installer tests.
+Actionlint, shell syntax, and whitespace checks also passed. Verification:
+
+```sh
+python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py
+python3 scripts/install/test_install_sh.py
+actionlint -oneline .github/workflows/rust-release.yml
+sh -n scripts/install/install.sh
+git diff --check
+# After verifying and extracting a release archive:
+python3 .github/scripts/check_linux_glibc.py /path/to/package
+```
 
 ## Voice handshake and provenance
 

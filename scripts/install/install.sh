@@ -486,6 +486,10 @@ select_release_assets() {
   elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz"; then
     install_layout="legacy-platform-npm"
     asset="codex-npm-$npm_tag-$resolved_version.tgz"
+    # Legacy npm archives keep their upstream musl vendor directory names.
+    case "$vendor_target" in
+      *-unknown-linux-gnu) vendor_target="${vendor_target%-gnu}-musl" ;;
+    esac
   else
     echo "Could not find Codex package or platform npm release assets for Codex $resolved_version." >&2
     return 1
@@ -870,7 +874,7 @@ prune_standalone_releases() (
       [ "$entrypoint" = "bin/codex" ] && [ -f "$candidate/bin/codex" ] || continue
     validate_version "$version" >/dev/null 2>&1 || continue
     case "$target" in
-      aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-musl | x86_64-unknown-linux-musl) ;;
+      aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-gnu | x86_64-unknown-linux-gnu | aarch64-unknown-linux-musl | x86_64-unknown-linux-musl) ;;
       *) continue ;;
     esac
 
@@ -1299,11 +1303,11 @@ if [ "$os" = "darwin" ]; then
 else
   if [ "$arch" = "aarch64" ]; then
     npm_tag="linux-arm64"
-    vendor_target="aarch64-unknown-linux-musl"
+    vendor_target="aarch64-unknown-linux-gnu"
     platform_label="Linux (ARM64)"
   else
     npm_tag="linux-x64"
-    vendor_target="x86_64-unknown-linux-musl"
+    vendor_target="x86_64-unknown-linux-gnu"
     platform_label="Linux (x64)"
   fi
 fi

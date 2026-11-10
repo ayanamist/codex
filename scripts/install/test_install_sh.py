@@ -21,6 +21,36 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_linux_installs_gnu_packages_for_both_architectures(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                target = f"{arch}-unknown-linux-gnu"
+                archive, checksum, metadata = create_package_release(root, target=target)
+                result, requests = run_installer_in(
+                    root, VERSION, metadata_json=metadata, archive_path=archive,
+                    checksum_path=checksum, force_linux_arch=arch,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(requests[-1].endswith(f"/codex-package-{target}.tar.gz"))
+                selected = root / "codex-home/packages/standalone/current"
+                self.assertEqual(selected.resolve().name, f"{VERSION}-{target}")
+
+    def test_linux_legacy_npm_archive_keeps_its_musl_vendor_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, metadata = create_legacy_release(
+                root, target="x86_64-unknown-linux-musl", npm_tag="linux-x64"
+            )
+            result, requests = run_installer_in(
+                root, VERSION, metadata_json=metadata, legacy_archive_path=archive,
+                force_linux_arch="x86_64",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(requests[-1].endswith(f"/codex-npm-linux-x64-{VERSION}.tgz"))
+            selected = root / "codex-home/packages/standalone/current"
+            self.assertEqual(selected.resolve().name, f"{VERSION}-x86_64-unknown-linux-musl")
+
     def test_numbered_fork_release_is_valid(self) -> None:
         version = "0.167.0-ayanamist.10"
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -454,7 +484,7 @@ class InstallShTest(unittest.TestCase):
                                 f"Cannot inspect live {name} process {process.name}"
                             )
             arch = "aarch64" if system.machine in ("arm64", "aarch64") else "x86_64"
-            target = f"{arch}-{'apple-darwin' if system.sysname == 'Darwin' else 'unknown-linux-musl'}"
+            target = f"{arch}-{'apple-darwin' if system.sysname == 'Darwin' else 'unknown-linux-gnu'}"
             packages = root / "codex-home/packages/standalone"
             releases = packages / "releases"
             versions = ("0.140.0", "0.141.0", VERSION)
@@ -790,6 +820,7 @@ def run_installer_in(
     releases_checksum_path: Path | None = None,
     legacy_archive_path: Path | None = None,
     force_macos: bool = False,
+    force_linux_arch: str | None = None,
     use_mirror: bool | None = False,
     releases_mode: str = "",
     update_guard_from_release: str | None = None,
@@ -897,13 +928,13 @@ def run_installer_in(
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
-    if force_macos:
+    if force_macos or force_linux_arch:
         fake_uname = bin_dir / "uname"
         fake_uname.write_text(
             "#!/bin/sh\n"
             'case "$1" in\n'
-            "  -s) printf 'Darwin\\n' ;;\n"
-            "  -m) printf 'arm64\\n' ;;\n"
+            f"  -s) printf '{'Linux' if force_linux_arch else 'Darwin'}\\n' ;;\n"
+            f"  -m) printf '{force_linux_arch or 'arm64'}\\n' ;;\n"
             "esac\n",
             encoding="utf-8",
         )
@@ -1052,9 +1083,11 @@ def create_package_release(
     return archive_path, checksum_path, metadata_json
 
 
-def create_legacy_release(root: Path) -> tuple[Path, str]:
+def create_legacy_release(
+    root: Path, *, target: str = "aarch64-apple-darwin", npm_tag: str = "darwin-arm64"
+) -> tuple[Path, str]:
     package_dir = root / "legacy-package"
-    vendor_dir = package_dir / "package" / "vendor" / "aarch64-apple-darwin"
+    vendor_dir = package_dir / "package" / "vendor" / target
     (vendor_dir / "codex").mkdir(parents=True)
     (vendor_dir / "path").mkdir()
     write_executable(
@@ -1062,8 +1095,11 @@ def create_legacy_release(root: Path) -> tuple[Path, str]:
         f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n",
     )
     write_executable(vendor_dir / "path" / "rg", "#!/bin/sh\nexit 0\n")
+    if "linux" in target:
+        (vendor_dir / "codex-resources").mkdir()
+        write_executable(vendor_dir / "codex-resources/bwrap", "#!/bin/sh\nexit 0\n")
 
-    asset = f"codex-npm-darwin-arm64-{VERSION}.tgz"
+    asset = f"codex-npm-{npm_tag}-{VERSION}.tgz"
     archive_path = root / asset
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(package_dir / "package", arcname="package")
@@ -1094,8 +1130,8 @@ def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
         for target in (
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
-            "aarch64-unknown-linux-musl",
-            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
         )
     ]
     assets.append(
