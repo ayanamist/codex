@@ -33,6 +33,17 @@ pub(crate) fn server_version_notice_kind(
     let client_release = (client.major, client.minor, client.patch);
     let server_release = (server.major, server.minor, server.patch);
     let client_is_local = client_release == (0, 0, 0) || !client.build.is_empty();
+    // Unrecognized release suffixes identify builds without ordering peers.
+    let unordered_suffix = |version: &semver::Version| {
+        !version.pre.is_empty()
+            && !matches!(
+                version.pre.as_str().split('.').next(),
+                Some("alpha" | "beta")
+            )
+    };
+    if unordered_suffix(&client) || unordered_suffix(&server) {
+        return (client != server).then_some(ServerVersionNoticeKind::Different);
+    }
     if client_is_local || (!client.pre.is_empty() && client_release != server_release) {
         return (client != server).then_some(ServerVersionNoticeKind::Different);
     }
@@ -68,9 +79,24 @@ mod tests {
     }
 
     #[test]
-    fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), None);
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), None);
+    fn latest_release_suffix_is_accepted() {
+        assert_eq!(is_newer("0.11.0-custom.ABC123", "0.11.0"), Some(true));
+        assert_eq!(is_newer("1.0.0-fork.5d0840ed", "1.0.0"), Some(true));
+    }
+
+    #[test]
+    fn fork_server_mismatches_do_not_use_hash_lexical_order() {
+        for (client, server) in [
+            ("0.167.0-fork.aaaaaaaa", "0.167.0-fork.bbbbbbbb"),
+            ("0.167.0-fork.bbbbbbbb", "0.167.0-fork.aaaaaaaa"),
+            ("0.167.0-custom.ABC123", "0.167.0"),
+        ] {
+            assert_eq!(
+                server_version_notice_kind(client, server),
+                Some(ServerVersionNoticeKind::Different)
+            );
+            assert_eq!(server_version_notice_kind(client, client), None);
+        }
     }
 
     #[test]

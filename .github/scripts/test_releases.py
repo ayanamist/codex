@@ -17,8 +17,13 @@ class VersionComparisonTest(unittest.TestCase):
     def test_validation_accepts_alpha_hotfix(self) -> None:
         self.assertTrue(is_valid_release_version("0.123.0-alpha.5.2"))
 
-    def test_validation_rejects_extra_component(self) -> None:
-        self.assertFalse(is_valid_release_version("0.123.0-alpha.5.2.3"))
+    def test_validation_accepts_arbitrary_semver_suffixes(self) -> None:
+        for version in ["0.123.0-alpha.5.2.3", "0.167.0-fork.a", "0.167.0-fork.5d0840ed", "0.167.0-custom-build.ABC123"]:
+            with self.subTest(version=version):
+                self.assertTrue(is_valid_release_version(version))
+        for version in ["0.123.0.4", "0.123.0-", "0.123.0-a..b", "0.123.0-fork.01", "0.123.0-a/b", "0.123.0-a b", "0.123.0-a\n"]:
+            with self.subTest(version=version):
+                self.assertFalse(is_valid_release_version(version))
 
     def test_next_alpha_after_public_release(self) -> None:
         self.assertTrue(should_update_version("0.124.0-alpha.1", "0.123.0"))

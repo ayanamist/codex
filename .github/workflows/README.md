@@ -3,19 +3,26 @@
 Scope: `ayanamist/codex`, reviewed on 2026-11-10 against workspace version
 `0.167.0` and the accompanying fork changes.
 Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc,
-GNU, Windows, MAX_PATH, Cargo, cache, timings.
+GNU, Windows, MAX_PATH, Cargo, cache, timings, commit hash, SemVer suffix,
+paths-ignore.
 
 Only [`rust-release.yml`](rust-release.yml) remains. Pushing to `fork-release`
-automatically selects a tag such as `rust-v0.167.0-ayanamist.1`, builds the
+automatically selects a tag such as `rust-v0.167.0-fork.5d0840ed`, builds the
 fork's `codex` entrypoint for Linux GNU/glibc, macOS, and Windows on x86_64 and ARM64,
 and publishes a stable release. Manual tag creation is unnecessary. A manual
 `workflow_dispatch` on `fork-release` provides a recovery entry point.
 
-The next revision is allocated from existing fork tags for the same upstream
-base, and a new base starts at revision 1. A retry reuses the tag already
+The suffix contains the first eight source commit characters, with the full SHA
+retained in package metadata and linked release notes. A retry reuses the tag already
 reserved for that commit. Published commits and obsolete queued push commits
-are skipped. The workflow serializes allocation through publication and passes
+are skipped. A later documentation-only push does not supersede a pending code
+release. The workflow serializes allocation through publication and passes
 the selected tag to its later jobs directly, using the built-in `GITHUB_TOKEN`.
+
+Pushes changing only `docs/**` or `.md`, `.mdx`, `.rst`, `.adoc`, and `.mmd` files
+are ignored. A push that also changes code still runs; manual dispatch remains
+available. The resolver uses the same path exclusions when deciding whether a
+newer branch head has superseded a queued code release.
 
 The workflow verifies that the corresponding `openai/codex` stable release
 exists and its tag commit is an ancestor of the fork commit. It downloads each
@@ -57,14 +64,18 @@ for evidence and runtime verification limits.
 The fork version is written to Cargo.toml and workspace Cargo.lock entries in
 the CI checkout. The integration branch keeps the original upstream version,
 reducing merge conflicts. Installers, startup/doctor update checks, and daemon
-installation recognize numbered fork releases as stable. See
+installation accept arbitrary legal SemVer suffixes, with no hash-length check.
+Generated versions use `fork.<eight characters>`; historical numbered releases
+remain supported. GitHub Release flags determine the stable channel. See
 [release management](../../docs/fork/release-management.md) for the release
 procedure, metadata contract, source evidence, and verification commands.
 
 The release publishes six `codex-package-<target>.tar.gz` files,
 `codex-package_SHA256SUMS`, the fork's `install.sh` and `install.ps1`, and
 `config-schema.json`. A first release can become `latest`; an older upstream
-base/revision cannot replace a newer `latest`. Published releases cannot be
+base cannot replace a newer `latest`, and GitHub commit comparison prevents a
+behind or diverged source commit from replacing it. Hashes are never ordered
+lexically. Published releases cannot be
 overwritten; failed drafts can be retried.
 
 The new macOS entrypoint uses an ad hoc signature; the Windows entrypoint is

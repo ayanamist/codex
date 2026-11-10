@@ -12,11 +12,11 @@ import tarfile
 import tempfile
 import tomllib
 
-from releases import should_make_latest
+from releases import is_valid_release_version, should_make_latest
 
 ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = "openai/codex"
-FORK_TAG = re.compile(r"rust-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-ayanamist\.([1-9][0-9]*)")
+DOCUMENTATION_GLOBS = ("docs/**", "**/*.md", "**/*.mdx", "**/*.rst", "**/*.adoc", "**/*.mmd")
 TARGETS = (
     "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin", "aarch64-apple-darwin",
@@ -49,12 +49,10 @@ def github_json(endpoint: str, *, missing_ok: bool = False, data: dict | None = 
 
 
 def parse_tag(tag: str) -> tuple[str, str]:
-    match = FORK_TAG.fullmatch(tag)
-    if match is None:
-        raise ValueError("Expected rust-v<upstream version>-ayanamist.<positive revision>")
-    if any(int(part) > 2**64 - 1 for part in (*match[1].split("."), match[2])):
-        raise ValueError("Release version components exceed the supported integer range")
-    return match[1], tag.removeprefix("rust-v")
+    version = tag.removeprefix("rust-v")
+    if not tag.startswith("rust-v") or not is_valid_release_version(version) or "-" not in version:
+        raise ValueError("Expected rust-v<upstream version>-<valid SemVer suffix>")
+    return version.partition("-")[0], version
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -85,37 +83,57 @@ def tag_commit(repository: str, reference: dict) -> str:
     raise ValueError("Fork release tag does not resolve to a commit")
 
 
+def commit_tag(base: str, commit: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("A full lowercase fork commit is required")
+    tag = f"rust-v{base}-fork.{commit[:8]}"
+    if commit[:8].isdigit() and commit.startswith("0"):
+        raise ValueError("The first eight commit characters form a numeric SemVer identifier with leading zeroes; use another source commit")
+    parse_tag(tag)
+    return tag
+
+
+def verify_tag_commit(tag: str, commit: str) -> None:
+    _, version = parse_tag(tag)
+    identity = version.partition("-")[2]
+    suffix = identity.removeprefix("fork.") if identity.startswith("fork.") else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("A full lowercase fork commit is required")
+    if suffix and re.fullmatch(r"[0-9a-f]+", suffix) and not commit.startswith(suffix):
+        raise ValueError("Fork tag hash does not match the source commit")
+
+
+def only_documentation_changed(commit: str, head: str, *, cwd: Path = ROOT) -> bool:
+    try:
+        run("git", "merge-base", "--is-ancestor", commit, head, cwd=cwd)
+    except subprocess.CalledProcessError:
+        return False
+    changed = run("git", "diff", "--name-only", commit, head, "--", ".",
+                  *(f":(exclude,glob){pattern}" for pattern in DOCUMENTATION_GLOBS), cwd=cwd)
+    return not changed
+
+
 def automatic_tag(base: str, commit: str) -> tuple[str, bool]:
-    """Allocate once per commit. The workflow serializes automatic publication."""
+    """Reserve a deterministic commit tag under the workflow's publication lock."""
     repository = os.environ["GITHUB_REPOSITORY"]
     head = github_json(f"repos/{repository}/git/ref/heads/fork-release")
-    if head["object"]["sha"] != commit:
-        print("This commit has been superseded on fork-release; skipping publication")
-        return "", False
-    prefix = f"rust-v{base}-ayanamist."
-    references = github_json(f"repos/{repository}/git/matching-refs/tags/{prefix}")
-    revisions = []
-    matching = []
-    for reference in references:
-        tag = reference["ref"].removeprefix("refs/tags/")
-        match = FORK_TAG.fullmatch(tag)
-        if match is None or match[1] != base:
-            continue
-        revision = int(match[2])
-        revisions.append(revision)
-        if tag_commit(repository, reference) == commit:
-            matching.append((revision, tag))
-    if matching:
-        tag = max(matching)[1]
-        for _, candidate in sorted(matching, reverse=True):
-            existing = github_json(f"repos/{repository}/releases/tags/{candidate}", missing_ok=True)
-            if existing is not None and not existing["draft"]:
-                print(f"Commit already published as {candidate}; skipping publication")
-                return candidate, False
+    head_commit = head["object"]["sha"]
+    if head_commit != commit:
+        run("git", "fetch", "--no-tags", f"https://github.com/{repository}.git", head_commit)
+        if not only_documentation_changed(commit, head_commit):
+            print("This commit has been superseded on fork-release; skipping publication")
+            return "", False
+    tag = commit_tag(base, commit)
+    reference = github_json(f"repos/{repository}/git/ref/tags/{tag}", missing_ok=True)
+    if reference is not None:
+        if tag_commit(repository, reference) != commit:
+            raise ValueError("Fork tag collision: the abbreviated hash points to another commit")
+        existing = github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True)
+        if existing is not None and not existing["draft"]:
+            print(f"Commit already published as {tag}; skipping publication")
+            return tag, False
         print(f"Resuming release {tag} for the same commit")
         return tag, True
-    tag = f"{prefix}{max(revisions, default=0) + 1}"
-    parse_tag(tag)
     github_json(f"repos/{repository}/git/refs", data={
         "ref": f"refs/tags/{tag}", "sha": commit,
     })
@@ -127,7 +145,7 @@ def resolve(tag: str | None, output: Path) -> None:
     workspace = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())
     base = workspace["workspace"]["package"]["version"]
     if tag is None:
-        parse_tag(f"rust-v{base}-ayanamist.1")
+        commit_tag(base, "a" * 40)
     else:
         base, _ = parse_tag(tag)
     if workspace["workspace"]["package"]["version"] != base:
@@ -140,6 +158,8 @@ def resolve(tag: str | None, output: Path) -> None:
     upstream_commit = run("git", "rev-parse", "FETCH_HEAD^{commit}")
     run("git", "merge-base", "--is-ancestor", upstream_commit, "HEAD")
     fork_commit = run("git", "rev-parse", "HEAD")
+    if tag is not None:
+        verify_tag_commit(tag, fork_commit)
     should_publish = True
     if tag is None:
         tag, should_publish = automatic_tag(base, fork_commit)
@@ -268,6 +288,8 @@ def verify_archive(archive: Path, manifest: Path) -> None:
 
 def prepare(args: argparse.Namespace) -> None:
     base, version = parse_tag(args.tag)
+    fork_commit = run("git", "rev-parse", "HEAD")
+    verify_tag_commit(args.tag, fork_commit)
     if not re.fullmatch(r"[0-9a-f]{40}", args.upstream_commit):
         raise ValueError("A full upstream commit is required")
     resource_target = upstream_target(args.target)
@@ -286,12 +308,12 @@ def prepare(args: argparse.Namespace) -> None:
     }
     write_json(args.package_dir / "fork-build.json", {
         "version": version, "upstreamTag": f"rust-v{base}",
-        "upstreamCommit": args.upstream_commit, "forkCommit": run("git", "rev-parse", "HEAD"),
+        "upstreamCommit": args.upstream_commit, "forkCommit": fork_commit,
         "target": args.target, "upstreamTarget": resource_target, "upstreamFiles": upstream_files,
     })
     values = {
         "CODEX_VOICE_HELPER_COMMIT": args.upstream_commit,
-        "STABLE_GIT_COMMIT": run("git", "rev-parse", "HEAD"),
+        "STABLE_GIT_COMMIT": fork_commit,
         "FORK_VERSION": version,
     }
     if "linux" in args.target:
@@ -350,6 +372,8 @@ def publish(tag: str, directory: Path) -> None:
     archives = [directory / f"codex-package-{target}.tar.gz" for target in TARGETS]
     if any(not path.is_file() for path in archives):
         raise ValueError("All six platform packages are required before publication")
+    commit = run("git", "rev-parse", "HEAD")
+    verify_tag_commit(tag, commit)
     repository = os.environ["GITHUB_REPOSITORY"]
     (directory / "codex-package_SHA256SUMS").write_text(
         "".join(f"{digest(path)}  {path.name}\n" for path in archives), encoding="utf-8",
@@ -359,15 +383,20 @@ def publish(tag: str, directory: Path) -> None:
     shutil.copyfile(ROOT / "codex-rs/core/config.schema.json", directory / "config-schema.json")
     existing = github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True)
     if existing is not None and not existing["draft"]:
-        raise ValueError("Refusing to replace an already published fork release; create a new revision")
+        raise ValueError("Refusing to replace an already published fork release; publish a new commit")
     latest = github_json(f"repos/{repository}/releases/latest", missing_ok=True)
     make_latest = latest is None or should_make_latest(version, latest)
+    if latest is not None and make_latest and latest["tag_name"] != tag:
+        comparison = github_json(f"repos/{repository}/compare/{latest['tag_name']}...{commit}")
+        if comparison["status"] not in {"ahead", "identical", "behind", "diverged"}:
+            raise ValueError("Cannot determine release commit ancestry")
+        make_latest = comparison["status"] in {"ahead", "identical"}
     notes = directory / "release-notes.md"
     base, _ = parse_tag(tag)
     notes.write_text(
         f"Fork CLI {version}, based on [{UPSTREAM} rust-v{base}]"
         f"(https://github.com/{UPSTREAM}/releases/tag/rust-v{base}).\n\n"
-        f"Fork commit: `{run('git', 'rev-parse', 'HEAD')}`. Only `codex` is rebuilt; "
+        f"Fork commit: [`{commit}`](https://github.com/{repository}/commit/{commit}). Only `codex` is rebuilt; "
         "helpers and native voice resources are reused from the pinned upstream release.\n\n"
         "Linux packages require glibc 2.38 or newer; their CLI targets GNU Linux, "
         "with upstream helpers reused from the corresponding musl package.\n\n"

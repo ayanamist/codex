@@ -51,18 +51,27 @@ class InstallShTest(unittest.TestCase):
             selected = root / "codex-home/packages/standalone/current"
             self.assertEqual(selected.resolve().name, f"{VERSION}-x86_64-unknown-linux-musl")
 
-    def test_numbered_fork_release_is_valid(self) -> None:
-        version = "0.167.0-ayanamist.10"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            archive, checksum, metadata = create_package_release(
-                root, metadata_version=version, binary_version=version
-            )
-            result, _ = run_installer_in(
-                root, version, metadata_json=metadata, archive_path=archive,
-                checksum_path=checksum, force_macos=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
+    def test_release_suffixes_are_not_restricted_to_names_or_lengths(self) -> None:
+        for version in ["0.167.0-ayanamist.10", "0.167.0-fork.5d0840ed", "0.167.0-fork.a", "0.167.0-custom-build.ABC123"]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                archive, checksum, metadata = create_package_release(
+                    root, metadata_version=version, binary_version=version
+                )
+                result, requests = run_installer_in(
+                    root, version, metadata_json=metadata, archive_path=archive,
+                    checksum_path=checksum, force_macos=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"https://api.github.com/repos/ayanamist/codex/releases/tags/rust-v{version}", requests)
+
+    def test_invalid_semver_suffixes_are_rejected_before_downloading(self) -> None:
+        for suffix in ["fork.01", "fork..abc", "a/b", "a b", "a\nb", ""]:
+            with self.subTest(suffix=suffix):
+                result, requests = run_installer("0.167.0-" + suffix)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Invalid Codex release version", result.stderr)
+                self.assertEqual(requests, [])
 
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True, use_mirror=None)

@@ -7,8 +7,11 @@ Linux glibc compatibility was updated on 2026-11-10 against `f146e4071a`,
 workspace version `0.167.0`, plus the accompanying changes.
 Windows dependency checkout and release caching were updated on 2026-11-10
 against `6305206509`, workspace version `0.167.0`, and Actions run `42757196810`.
+Documentation-only push filtering and commit-based versions were updated on
+2026-11-10 against `5d0840ed69be4451d0a3dba14a26e1a833629b5f` plus local changes.
 Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer,
-glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings.
+glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings, commit hash,
+SemVer suffix, paths-ignore.
 
 ## Release procedure
 
@@ -17,15 +20,21 @@ release, fetch its tags and merge the exact release tag. Commit local feature
 changes normally. Pushing this branch automatically allocates a fork version,
 creates its tag, builds the six platform packages, and publishes a stable
 GitHub Release. A push containing several commits releases the branch tip.
-No manual tag or Cargo version edit is needed.
+No manual tag or Cargo version edit is needed. Pushes changing only `docs/**`
+or files ending in `.md`, `.mdx`, `.rst`, `.adoc`, or `.mmd` do not start the
+workflow. Mixed documentation/code pushes still release the branch tip;
+`workflow_dispatch` remains available regardless of changed paths. These are
+[GitHub path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore),
+so GitHub's documented diff limits also apply.
 
-The fork tag combines the upstream version and a positive fork revision:
+The generated fork tag combines the upstream version and the first eight
+lowercase characters of the source commit (the table uses illustrative commits):
 
 | Upstream base | Fork version | Fork release tag |
 | --- | --- | --- |
-| `0.167.0` | `0.167.0-ayanamist.1` | `rust-v0.167.0-ayanamist.1` |
-| `0.167.0` | `0.167.0-ayanamist.2` | `rust-v0.167.0-ayanamist.2` |
-| `0.168.0` | `0.168.0-ayanamist.1` | `rust-v0.168.0-ayanamist.1` |
+| `0.167.0` | `0.167.0-fork.5d0840ed` | `rust-v0.167.0-fork.5d0840ed` |
+| `0.167.0` | `0.167.0-fork.abcdef12` | `rust-v0.167.0-fork.abcdef12` |
+| `0.168.0` | `0.168.0-fork.abcdef12` | `rust-v0.168.0-fork.abcdef12` |
 
 After committing and reviewing the intended source and workflow changes, an
 example upstream update is:
@@ -39,21 +48,27 @@ git push origin fork-release
 ```
 
 These commands are a documented procedure, not actions performed during this
-change. The workflow finds the largest existing fork tag revision for the same
-upstream base and reserves the next number. A new base starts at revision 1.
+change. The workflow derives the tag directly from the upstream base and source
+commit, without allocating a numeric revision. The complete commit is retained
+in the tag target, package metadata, and linked release notes. An existing
+eight-character tag must point to the same full commit; a collision fails
+explicitly rather than reusing another commit's release.
 The tag is a lightweight reference to the exact checked-out commit. Imported
 upstream tags remain unchanged and tag pushes do not trigger this workflow.
 
 Allocation and publication are serialized across workflow runs. A queued run
-whose source commit is no longer the tip of `fork-release` skips publication.
+whose source commit has been superseded by code changes on `fork-release`
+skips publication. A later push containing only ignored documentation changes
+does not cancel an earlier code release: the resolver fetches the current head,
+checks ancestry, and compares the trees excluding the same documentation paths.
 The active run is allowed to finish. With GitHub's default single pending slot,
 newer pushes can replace an older waiting run; this branch tracks the latest
 pushed state rather than promising a separate release for every intermediate
 push. See [workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 The same commit reuses an existing reserved tag, including a tag whose build
 failed or whose release is still a draft. If the commit has already been
-published, the build and release jobs are skipped instead of incrementing the
-revision again. Number comparison is numeric, so `.10` follows `.9`.
+published under its generated tag, the build and release jobs are skipped.
+Existing numbered tags and published assets are not renamed or rewritten.
 
 To recover a failed run, use **Re-run failed jobs** on that Actions run while
 the commit is still current. **Run workflow** is also available on the default
@@ -236,7 +251,7 @@ includes the runner label, target triple, and virtual root `Cargo.toml` hash
 OS/architecture, installed Rust compiler identities, Cargo/Rust compiler
 environment, manifests, lockfile, and Cargo configuration. The native SQLite
 flags are set before restoration and included explicitly. The restore step
-precedes fork version stamping, so release revision changes do not create a
+precedes fork version stamping, so release identity changes do not create a
 separate dependency cache. Lockfile changes can restore a compatible previous
 cache, with Cargo checking which dependencies need rebuilding. Bump
 `prefix-key` when changing native build inputs not included in those keys.
@@ -360,14 +375,116 @@ The [release validator](../../.github/scripts/releases.py),
 [TUI update check](../../codex-rs/tui/src/update_versions.rs),
 [doctor update check](../../codex-rs/cli/src/doctor/updates.rs), and
 [daemon package staging](../../codex-rs/app-server-daemon/src/prepare_install.rs)
-recognize numbered fork releases. Update comparison orders numeric upstream
-versions first and numeric fork revisions second. Older bases/revisions cannot
-replace a newer latest release. Although the suffix is a SemVer prerelease
-identifier, the workflow explicitly publishes it with GitHub `prerelease=false`.
+accept legal SemVer suffixes without enumerating names or imposing a hash
+length. Generation still uses `fork.<first eight commit characters>`. Validation
+rejects empty/doubled identifiers, path separators, whitespace, and numeric
+identifiers with leading zeroes. Build metadata (`+...`) is outside this channel.
+
+Update checks compare numeric upstream bases first; within the same base,
+different custom suffixes are different build identities from the authoritative
+GitHub `latest` endpoint. Hashes are not sorted lexically. Legacy numbered
+versions remain installable and compare numerically with one another; clients
+can migrate from them to a hash release without suggesting a return to an old
+numbered version. The publisher additionally uses GitHub's compare API and only
+promotes a candidate whose commit is ahead of or identical to the current
+`latest` commit. Older bases and behind/diverged commits cannot replace `latest`.
+CLI/server notices describe differing custom identities without claiming that
+one hash is older. GitHub's `draft` and `prerelease` flags determine the channel;
+the workflow publishes the fork release with `prerelease=false`.
+
+SemVer imposes one edge case on the requested spelling: an eight-character hash
+containing only digits and starting with `0` would be an invalid numeric
+identifier (for example `fork.01234567`). Generation fails with an explicit
+message in that case; it neither changes the hash nor silently extends it.
+Use a different source commit. Already-installed binaries retain their old
+update-check code until replaced; `codex update` or the standalone installer
+can install the new release even if the old startup check does not recognize it.
 
 Do not use four numeric components, which Cargo/SemVer reject, or rely on build
-metadata such as `+ayanamist.N` for update precedence. Upstream alpha/beta
-handling is retained outside the fork's stable tag trigger.
+metadata such as `+ayanamist.N` for update precedence. Legacy npm/R2 utilities
+retain their conventional alpha/beta channel handling separately from GitHub
+Release metadata.
+
+## Verification of documentation filtering and commit-based versions
+
+On 2026-11-10, local verification passed 23 fork-release tests, 24 release
+utility tests, 21 Unix installer tests, 10 build-info tests, one daemon release
+layout test, 11 TUI version tests, and one CLI doctor comparison test (91 total).
+The Git fixture exercises real documentation-only and mixed diffs, including
+root Markdown files and non-Markdown assets under `docs/`. Publication fixtures
+cover eight-character generation, collision rejection, retries, custom suffixes,
+migration from numbered releases, and ahead/identical/behind/diverged commits.
+Remote tag/release writes are mocked in these tests.
+
+Read-only live checks still found `rust-v0.167.0-ayanamist.2` as the fork's
+published, non-prerelease `latest`. Comparing that tag to
+`5d0840ed69be4451d0a3dba14a26e1a833629b5f` returned `status: identical`,
+`ahead_by: 0`, and `behind_by: 0`. These checks do not publish the local changes.
+Actionlint, shell syntax, relative documentation links, and whitespace checks
+also passed. The existing unused-variable warning in
+`tui/src/chatwidget/rate_limits.rs` remains.
+
+```sh
+python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 -m unittest discover -s .github/scripts -p test_releases.py
+python3 scripts/install/test_install_sh.py
+actionlint -oneline .github/workflows/rust-release.yml
+sh -n scripts/install/install.sh
+git diff --check
+cd codex-rs
+cargo test --offline -p codex-build-info --lib
+cargo test --offline -p codex-app-server-daemon --lib semver_suffixes_use_the_release_install_layout
+cargo test --offline -p codex-tui --lib update_versions::tests --no-default-features
+cargo test --offline -p codex-cli --bin codex doctor::updates::tests::is_newer_compares_plain_semver
+```
+
+The existing lockfile records local workspace packages as `0.0.0`, while the
+workspace manifest uses `0.167.0`, so `--locked` initially rejected the test
+invocation. Offline testing temporarily normalized 171 local package versions;
+the original lockfile was restored after verifying that dependencies had not
+changed. PowerShell execution, the changed Actions trigger/action pin, and
+publication of the new format have not been exercised live. No commit or push
+was performed.
+
+## Rust toolchain input warning
+
+Investigated on 2026-11-10 against fork commit
+`5d0840ed69be4451d0a3dba14a26e1a833629b5f` and
+[run 42777286813](https://github.com/ayanamist/codex/actions/runs/42777286813).
+Keywords: Rust, toolchain, dtolnay, unexpected input, action pin.
+
+The inspected run passed `needs.resolve.outputs.rust_toolchain` to
+`dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582`.
+That exact [action manifest](https://github.com/dtolnay/rust-toolchain/blob/e081816240890017053eacbb1bdf337761dc5582/action.yml)
+declares only `targets`, `target`, and `components`; its parse step hardcodes
+`toolchain: 1.95.0`. Therefore the runner warns about the undeclared `toolchain`
+input, and the supplied value does not select the installed Rust version.
+
+The [Linux x86_64 job log](https://github.com/ayanamist/codex/actions/runs/42777286813/job/129698986796)
+shows the exact warning, the supplied `toolchain: 1.95.0`, installation and
+default selection of `1.95.0`, and `rustc 1.95.0` output. The run API reports
+success for all six build jobs and publication. The versions matched in this
+run; a future change to the resolver output would not change this action's
+hardcoded version.
+
+For dynamic selection, use a SHA from the action's `master` history that declares
+and reads `inputs.toolchain`, as described in the
+[action documentation](https://github.com/dtolnay/rust-toolchain#inputs).
+At inspection, `master` resolved to
+`683b588c487a69d01f6c6ddf40f036ff682cc2c8`; its manifest was verified to declare
+the input and read it into the parse step. The local workflow now uses that SHA
+and retains `with.toolchain`; an Actions run is still needed to verify the
+changed pin. Removing the input alone would have retained the fixed Rust version.
+
+Read-only verification commands:
+
+```sh
+gh api repos/ayanamist/codex/actions/runs/42777286813 --jq '{head_sha, conclusion}'
+gh api repos/ayanamist/codex/actions/runs/42777286813/jobs --paginate --jq '.jobs[] | {name, conclusion}'
+gh run view 42777286813 --repo ayanamist/codex --job 129698986796 --log | rg 'Unexpected input|toolchain:|rustup toolchain install|rustc 1.95.0'
+gh api 'repos/dtolnay/rust-toolchain/contents/action.yml?ref=e081816240890017053eacbb1bdf337761dc5582' --jq .content | base64 -d
+gh api 'repos/dtolnay/rust-toolchain/contents/action.yml?ref=683b588c487a69d01f6c6ddf40f036ff682cc2c8' --jq .content | base64 -d
+```
 
 ## Evidence, verification, and limits
 
@@ -402,7 +519,7 @@ CODEX_VOICE_HELPER_COMMIT=086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a \
 CODEX_TEST_UPSTREAM_VOICE_PACKAGE=/tmp/codex-upstream-overlay-check/package \
   cargo test --offline -p codex-realtime-webrtc --lib \
   pinned_upstream_voice_package_accepts_a_different_app_commit -- --ignored
-cargo test --offline -p codex-app-server-daemon --lib numbered_fork_versions_use_the_stable_install_channel
+cargo test --offline -p codex-app-server-daemon --lib semver_suffixes_use_the_release_install_layout
 cargo test --offline -p codex-tui --lib update_versions::tests --no-default-features
 cargo test --offline -p codex-cli --bin codex doctor::updates::tests::is_newer_compares_plain_semver
 cargo tree --offline --locked -p codex-cli --edges normal,build --prefix none --format '{p}'

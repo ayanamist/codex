@@ -226,7 +226,7 @@ async fn prepare_from_package(
         "daemon running state changed while awaiting confirmation; retry the command"
     );
     let backend = current_backend;
-    let stable = stable_version(&version).is_some();
+    let is_release = release_version(&version).is_some();
     let releases = root.join("releases");
     std::fs::create_dir_all(&releases)?;
     let stage = tempfile::Builder::new()
@@ -293,10 +293,10 @@ async fn prepare_from_package(
     let binary_version =
         managed_install::managed_codex_version(&stage.path().join(entrypoint)).await?;
     anyhow::ensure!(
-        !stable || version == binary_version,
+        !is_release || version == binary_version,
         "the CLI package version does not match its executable"
     );
-    let name = if stable && mode == InstallMode::Missing {
+    let name = if is_release && mode == InstallMode::Missing {
         format!("{version}-{target}")
     } else {
         format!("local-{digest}-{target}")
@@ -322,7 +322,7 @@ async fn prepare_from_package(
     let standalone = home.join("packages/standalone");
     let canonical_source = source.canonicalize()?;
     let follows_latest = mode == InstallMode::Missing
-        && stable
+        && is_release
         && (standalone.join("current").canonicalize().ok().as_deref()
             != Some(canonical_source.as_path())
             || std::fs::read_to_string(standalone.join("auto-update-version"))
@@ -496,17 +496,9 @@ fn package_tree(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn stable_version(value: &str) -> Option<semver::Version> {
+fn release_version(value: &str) -> Option<semver::Version> {
     let version = semver::Version::parse(value).ok()?;
-    let fork_revision = version
-        .pre
-        .as_str()
-        .strip_prefix("ayanamist.")
-        .and_then(|revision| revision.parse::<u64>().ok())
-        .is_some_and(|revision| revision > 0);
-    ((version.pre.is_empty() || fork_revision)
-        && version.build.is_empty()
-        && (version.major, version.minor, version.patch) != (0, 0, 0))
+    (version.build.is_empty() && (version.major, version.minor, version.patch) != (0, 0, 0))
         .then_some(version)
 }
 

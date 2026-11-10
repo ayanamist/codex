@@ -82,8 +82,9 @@ function Assert-ValidReleaseVersion {
         [string]$Version
     )
 
-    if ($Version -cne "latest" -and $Version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?|-ayanamist\.[1-9][0-9]*)?$") {
-        throw "Invalid Codex release version: $Version. Expected latest or x.y.z[-ayanamist.N|-alpha[.N[.M]]|-beta[.N]]."
+    $Suffix = ($Version -split '-', 2)[-1]
+    if ($Version -cne "latest" -and ($Version -cnotmatch "\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z" -or $Suffix -cmatch '(^|\.)0[0-9]+(\.|$)')) {
+        throw "Invalid Codex release version: $Version. Expected latest or x.y.z[-SUFFIX] with a valid SemVer suffix."
     }
 }
 

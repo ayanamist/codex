@@ -12,29 +12,51 @@ use sha2::Sha256;
 
 static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
 
-/// Compare stable upstream versions and numbered stable releases of this fork.
-/// Fork revisions follow their upstream base and are ordered numerically.
-/// Alpha/beta builds and versions with build metadata are outside this channel.
+/// Compare an authoritative latest release with the installed version.
+/// Fork commit hashes identify builds, so different hashes on the same upstream
+/// base request an update regardless of their lexical order. Legacy numbered
+/// releases remain supported for migration to the commit-based channel.
+/// GitHub Release metadata determines the stable channel; suffix names and lengths
+/// are unrestricted. Versions with build metadata are outside this channel.
 pub fn is_newer_release(latest: &str, current: &str) -> Option<bool> {
-    fn key(value: &str) -> Option<(u64, u64, u64, u64)> {
-        let version = Version::parse(value.trim()).ok()?;
+    fn key(value: &str) -> Option<((u64, u64, u64), u64, Option<&str>)> {
+        let value = value.trim();
+        let version = Version::parse(value).ok()?;
         if !version.build.is_empty() {
             return None;
         }
-        let revision = if version.pre.is_empty() {
-            0
+        let (revision, commit) = if version.pre.is_empty() {
+            (0, None)
+        } else if let Some(revision) = version
+            .pre
+            .as_str()
+            .strip_prefix("ayanamist.")
+            .and_then(|revision| revision.parse::<u64>().ok())
+            .filter(|revision| *revision > 0)
+        {
+            (revision, None)
         } else {
-            let revision = version.pre.as_str().strip_prefix("ayanamist.")?;
-            let revision = revision.parse::<u64>().ok()?;
-            if revision == 0 {
-                return None;
-            }
-            revision
+            (0, Some(value.split_once('-')?.1))
         };
-        Some((version.major, version.minor, version.patch, revision))
+        Some((
+            (version.major, version.minor, version.patch),
+            revision,
+            commit,
+        ))
     }
 
-    Some(key(latest)? > key(current)?)
+    let (latest_base, latest_revision, latest_commit) = key(latest)?;
+    let (current_base, current_revision, current_commit) = key(current)?;
+    Some(if latest_base != current_base {
+        latest_base > current_base
+    } else {
+        match (latest_commit, current_commit) {
+            (Some(latest), Some(current)) => latest != current,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => latest_revision > current_revision,
+        }
+    })
 }
 
 /// Initialize build information from the commit stamped into the calling executable.

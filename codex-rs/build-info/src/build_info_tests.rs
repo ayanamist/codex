@@ -20,11 +20,37 @@ fn stable_fork_release_ordering() {
         ("0.167.1-ayanamist.1", "0.167.0-ayanamist.99", Some(true)),
         ("0.167.0", "0.167.0-ayanamist.1", Some(false)),
         ("0.167.0-ayanamist.1", "0.167.0-ayanamist.1", Some(false)),
-        ("0.167.0-ayanamist.0", "0.167.0", None),
+        ("0.167.0-ayanamist.0", "0.167.0", Some(true)),
         ("0.167.0-ayanamist.01", "0.167.0", None),
-        ("0.167.0-alpha.1", "0.166.0", None),
+        ("0.167.0-alpha.1", "0.166.0", Some(true)),
         ("0.167.0+ayanamist.1", "0.167.0", None),
         ("0.167.0.1", "0.167.0", None),
+    ] {
+        assert_eq!(crate::is_newer_release(latest, current), expected);
+    }
+}
+
+#[test]
+fn latest_release_suffixes_are_identities_with_no_name_or_length_restrictions() {
+    for (latest, current, expected) in [
+        ("0.167.0-fork.aaaaaaaa", "0.167.0-fork.bbbbbbbb", Some(true)),
+        ("0.167.0-fork.bbbbbbbb", "0.167.0-fork.aaaaaaaa", Some(true)),
+        (
+            "0.167.0-fork.aaaaaaaa",
+            "0.167.0-fork.aaaaaaaa",
+            Some(false),
+        ),
+        ("0.167.0-fork.a", "0.167.0-ayanamist.2", Some(true)),
+        ("0.167.0-ayanamist.2", "0.167.0-fork.a", Some(false)),
+        (
+            "0.168.0-custom-build.ABC123",
+            "0.167.0-fork.bbbbbbbb",
+            Some(true),
+        ),
+        ("0.167.0-fork.aaaaaaaa", "0.168.0-custom", Some(false)),
+        ("0.167.0-custom-build.ABC123", "0.167.0-fork.a", Some(true)),
+        ("0.167.0-fork.01", "0.167.0", None),
+        ("0.167.0-fork..abc", "0.167.0", None),
     ] {
         assert_eq!(crate::is_newer_release(latest, current), expected);
     }

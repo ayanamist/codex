@@ -639,7 +639,11 @@ mod tests {
     fn is_newer_compares_plain_semver() {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
         assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
-        assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
+        assert_eq!(is_newer("1.2.3-custom.ABC123", "1.2.2"), Some(true));
+        assert_eq!(
+            is_newer("1.2.3-fork.aaaaaaaa", "1.2.3-fork.bbbbbbbb"),
+            Some(true)
+        );
     }
 
     #[test]

@@ -5,6 +5,9 @@ and managed daemon installer downloads. Reviewed on 2026-11-10 against
 `14e06796d3420312ca48164a7e4573330f6f4d20` (workspace version `0.167.0`)
 plus the accompanying fork changes.
 Keywords: `codex update`, fork, GitHub Releases, standalone installer, version cache.
+Commit-based version acceptance was updated on 2026-11-10 against
+`5d0840ed69be4451d0a3dba14a26e1a833629b5f` plus local changes; keywords:
+commit hash, SemVer suffix, latest, legacy numbered versions.
 
 ## Behavior and source evidence
 
@@ -53,10 +56,14 @@ There is no `config.toml` setting for a GitHub repository or installer URL.
 
 ## Release contract and limits
 
-The fork release pipeline now publishes numbered versions such as
-`rust-v0.167.0-ayanamist.1` as stable GitHub releases. Its installers and update
-checks recognize the fork revision. Pushing `fork-release` now allocates the
-tag and publishes automatically. See [release management](release-management.md)
+The fork release pipeline generates versions such as
+`rust-v0.167.0-fork.5d0840ed`, using the source commit's first eight characters.
+Its installers accept arbitrary legal SemVer suffixes without fixing names or
+lengths. Update checks use the numeric upstream base and the identity from
+GitHub `latest`; hashes have no lexical precedence. Historical numbered releases
+remain installable. GitHub Release metadata determines stable/prerelease status.
+Code pushes to `fork-release` derive the tag and publish automatically, while
+documentation-only pushes are ignored. See [release management](release-management.md)
 for rebuilding only the fork entrypoint while reusing pinned upstream helpers.
 Linux standalone installs select the fork's `*-unknown-linux-gnu` packages,
 which support glibc 2.38 and newer; the release workflow validates imported
@@ -70,11 +77,15 @@ The installers also retain support for legacy platform npm archive assets.
 Prereleases can be installed explicitly with `--release`; they do not become
 the default `latest` stable channel.
 
-On 2026-11-10, `gh api repos/ayanamist/codex/releases/latest` returned HTTP 404,
+During the initial 2026-11-10 inspection, `gh api repos/ayanamist/codex/releases/latest` returned HTTP 404,
 and the release list returned `[]`. This is a point-in-time observation. Until
 an appropriate release exists, the configured bootstrap URLs cannot complete
-an online update. This change does not publish a release or replace an already
+an online update. Later, [run 42777286813](https://github.com/ayanamist/codex/actions/runs/42777286813)
+completed all six builds and release publication successfully; that run predates
+the local hash-version changes. This change does not publish a release or replace an already
 installed binary; it takes effect after installing a build containing it.
+The subsequent read-only check found `rust-v0.167.0-ayanamist.2` as the fork's
+non-prerelease `latest`; hash-based versions remain local changes.
 
 ## Verification
 
