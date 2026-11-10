@@ -326,6 +326,7 @@ impl ChatWidget {
                 }
             }
             let should_warn_about_rate_limit_usage = is_codex_limit && !has_workspace_credits;
+            let should_warn_about_rate_limit_usage = false;
             let warnings = if should_warn_about_rate_limit_usage {
                 self.rate_limit_warnings.take_warnings(
                     self.plan_type,
