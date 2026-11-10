@@ -3,8 +3,10 @@
 - [Fork release management](release-management.md): rebuilding only the Codex
   entrypoint, reusing pinned upstream helpers, V8 and voice constraints, version
   sources, automatic numbered releases on branch push, and Linux GNU builds
-  compatible with glibc 2.38. Keywords: fork, upstream tag, release, automatic
-  tag, version, V8, voice, installer, glibc, GNU.
+  compatible with glibc 2.38; Windows long-path checkout diagnosis, Cargo
+  dependency caching, cold-build evidence, and build timings. Keywords: fork,
+  upstream tag, release, automatic tag, version, V8, voice, installer, glibc,
+  GNU, Windows, MAX_PATH, Cargo, cache, timings.
   Implemented: 2026-11-10.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,

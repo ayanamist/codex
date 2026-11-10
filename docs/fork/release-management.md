@@ -5,7 +5,10 @@ on 2026-11-10 against `11f857b31e`, upstream `rust-v0.167.0`, workspace version
 `0.167.0`, plus the accompanying uncommitted fork release changes.
 Linux glibc compatibility was updated on 2026-11-10 against `f146e4071a`,
 workspace version `0.167.0`, plus the accompanying changes.
-Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer, glibc, GNU.
+Windows dependency checkout and release caching were updated on 2026-11-10
+against `6305206509`, workspace version `0.167.0`, and Actions run `42757196810`.
+Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer,
+glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings.
 
 ## Release procedure
 
@@ -167,6 +170,128 @@ sh -n scripts/install/install.sh
 git diff --check
 # After verifying and extracting a release archive:
 python3 .github/scripts/check_linux_glibc.py /path/to/package
+```
+
+## Windows dependency checkout and build caching
+
+[Run 42757196810](https://github.com/ayanamist/codex/actions/runs/42757196810)
+built `f146e4071ae7e6e30d6021f8952113e711877152`, before the Linux GNU change
+in `6305206509`. Its Linux results apply to the old musl targets, and do not
+validate the current GNU/glibc configuration.
+The run completed with `failure` at `2026-11-10T07:38:40Z`: both Windows
+targets failed, both Linux musl and both macOS targets succeeded, and publication
+was skipped. No other build failure was found in the completed jobs.
+
+Both Windows jobs failed while Cargo was resolving the workspace, before Rust
+compilation. The [x86_64 log](https://github.com/ayanamist/codex/actions/runs/42757196810/job/129634479172)
+and [ARM64 log](https://github.com/ayanamist/codex/actions/runs/42757196810/job/129634479025)
+report `failed to update submodule third_party/rust` followed by `path too long`
+and `class=Filesystem (30)`. The dependency was the workspace's pinned
+`rusty_v8` patch at `350c5a859a9b3c84ab8701b3ad51e3b7699b30c0`.
+Although the CLI does not compile V8, Cargo still checks out that patch and its
+submodules during workspace resolution. Omitting the V8 build/download action
+does not remove this source checkout requirement.
+
+The failing ICU test snapshot path was 266 characters under
+`C:/Users/runneradmin/.cargo`. Placing `CARGO_HOME` at the workspace drive's root
+`c` directory (for example `D:/c`) reduces that same path to 243 characters.
+The workflow sets this before toolchain/cache operations and enables
+`git config --global core.longpaths true`, matching the existing shared CI
+setup. Shortening the path addresses Cargo's checkout as well as Git subprocesses;
+the Git setting alone was not assumed to fix Cargo's filesystem operations.
+Walking the existing local V8 checkout gave a maximum of 252 characters when
+mapped to `D:/c/git/checkouts`, also below the traditional limit.
+The release workspace, target outputs, and package paths retain their layout.
+
+The observed cold build steps were:
+
+| Target in the observed run | Build step duration | Result |
+| --- | --- | --- |
+| `x86_64-unknown-linux-musl` | 56 min 54 s | Success, including package checks and upload |
+| `aarch64-unknown-linux-musl` | 48 min 20 s | Success, including package checks and upload |
+| `aarch64-apple-darwin` | 104 min 34 s | Success, including package checks and upload |
+| `x86_64-apple-darwin` | 174 min 19 s | Success, including package checks and upload |
+
+These step durations include dependency resolution/downloads as well as
+compilation/linking. Cargo itself reported 56 min 47 s and 48 min 11 s,
+respectively; macOS ARM64 reported 104 min 29 s and macOS Intel reported
+173 min 35 s. In the Linux ARM64 log,
+resolving/downloading git dependencies took
+about 3 min 17 s before crate downloads started. The official package download
+and verification took only 9 s. The cache API initially listed only two Zig
+tarball caches; there was no Cargo cache. This makes Cargo dependency reuse the
+first optimization, rather than caching upstream release packages.
+For macOS ARM64, the last `Compiling` line was at `05:36:17Z` and Cargo finished
+at `06:25:01Z`, leaving about 49 minutes without another compilation-start line.
+The old log cannot split this interval between ongoing crate compilation,
+optimization, and final linking; dependency cache hits should not be assumed to
+remove it. The new timing reports provide a more useful basis for that decision.
+
+The workflow uses
+[`Swatinem/rust-cache` v2.9.3](https://github.com/Swatinem/rust-cache/tree/d1527c8f67ef9af357290475d4af4b0fab8f12e0),
+pinned to its full commit. It restores Cargo registry/git data and the compiled
+third-party dependencies in `codex-rs/target`. The explicit cache namespace
+includes the runner label, target triple, and virtual root `Cargo.toml` hash
+(including the release profile and patches); the action also keys on host
+OS/architecture, installed Rust compiler identities, Cargo/Rust compiler
+environment, manifests, lockfile, and Cargo configuration. The native SQLite
+flags are set before restoration and included explicitly. The restore step
+precedes fork version stamping, so release revision changes do not create a
+separate dependency cache. Lockfile changes can restore a compatible previous
+cache, with Cargo checking which dependencies need rebuilding. Bump
+`prefix-key` when changing native build inputs not included in those keys.
+
+Workspace crate artifacts and installed Cargo binaries are excluded. Each fork
+release stamps all local package versions and embeds fork/voice commit inputs,
+so caching local crates would add volume without avoiding their rebuild.
+Incremental compilation data is also excluded by the action. Only successful
+jobs save caches; failed first builds cannot populate an immutable key with an
+incomplete dependency set. Cache-service failures fall back to a cold build.
+
+`cargo build --timings` now produces HTML reports, uploaded as separate
+`rust-build-timings-<target>` artifacts for seven days. The release download
+pattern is still `codex-*`, so timing reports never become release packages.
+Already gzipped release archives use artifact `compression-level: 0` to avoid
+redundant ZIP compression. Release optimization settings, including ThinLTO and
+the three-job memory bound, are retained. On 2026-11-10 the owner explicitly
+chose to retain release optimizations and measure cache benefits first.
+Disabling ThinLTO is a possible future compile/link tradeoff, but needs runtime
+and binary-size measurements first.
+
+The entire Intel macOS job took 178 min 39 s, leaving only 81 s under the
+original 180-minute limit, before adding cache restore/save overhead. Its job
+budget is now 240 minutes to accommodate cold-build variance and cache saving.
+Other targets retain 180 minutes. This provides headroom; it is not a measured
+speed improvement.
+
+Limits: the first run with the new cache is cold. Windows checkout success and
+warm-cache wall time require a subsequent Actions run with these changes; local
+Linux inspection cannot establish Windows filesystem behavior. A local V8
+checkout occupied 3.6 GiB before cache compression, so six platform caches may
+compete for repository cache capacity. Check actual cache sizes/eviction and
+restore/save time before claiming a speedup or increasing retained artifacts.
+
+Verification on 2026-11-10: actionlint, 18 fork-release tests, 4 glibc-checker
+tests, 24 release utility tests, 20 installer tests, documentation links,
+offline workspace metadata, and whitespace checks passed. No push, rerun,
+or publication was performed for this change.
+Reproduce the evidence and local checks with:
+
+```sh
+gh api repos/ayanamist/codex/actions/runs/42757196810
+gh api repos/ayanamist/codex/actions/runs/42757196810/jobs --paginate
+gh api repos/ayanamist/codex/actions/jobs/129634479172/logs
+gh api repos/ayanamist/codex/actions/jobs/129634479025/logs
+gh api repos/ayanamist/codex/actions/caches
+actionlint -oneline .github/workflows/rust-release.yml
+python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py
+python3 -m unittest discover -s .github/scripts -p test_releases.py
+python3 scripts/install/test_install_sh.py
+cd codex-rs
+cargo metadata --offline --locked --all-features --no-deps --format-version 1
+cd ..
+git diff --check
 ```
 
 ## Voice handshake and provenance

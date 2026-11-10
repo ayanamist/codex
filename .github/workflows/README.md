@@ -2,7 +2,8 @@
 
 Scope: `ayanamist/codex`, reviewed on 2026-11-10 against workspace version
 `0.167.0` and the accompanying fork changes.
-Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc, GNU.
+Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc,
+GNU, Windows, MAX_PATH, Cargo, cache, timings.
 
 Only [`rust-release.yml`](rust-release.yml) remains. Pushing to `fork-release`
 automatically selects a tag such as `rust-v0.167.0-ayanamist.1`, builds the
@@ -27,6 +28,24 @@ Only `codex-cli --bin codex` is built. Code-mode host, exec-server, voice helper
 native voice runtime, ripgrep, and platform sandbox helpers are reused from the
 pinned upstream package. Packaging verifies that reused file contents are
 unchanged. V8, lint tools, and separate app-server binaries are not built here.
+
+Windows jobs use a short Cargo home at the workspace drive root and enable Git
+long paths before dependency resolution. Cargo still checks out the pinned V8
+source patch while resolving the workspace, even though the CLI does not compile
+V8. Without this setup, both Windows jobs in run `42757196810` failed on an ICU
+snapshot filename exceeding the Windows path limit.
+
+Each target caches Cargo registry/git data and compiled third-party crates with
+`Swatinem/rust-cache`, pinned to v2.9.3's commit. Cache identity includes the
+runner/target, Rust/compiler environment, manifests, and lockfile. Restoration
+precedes fork version stamping; workspace crates are rebuilt for the new version
+and commit. Successful jobs save the cache. Cargo HTML timings are retained as
+separate `rust-build-timings-*` artifacts for seven days, outside the release's
+`codex-*` download pattern. Gzipped packages upload without redundant ZIP
+compression. See the [diagnosis, baseline, and cache limits](../../docs/fork/release-management.md#windows-dependency-checkout-and-build-caching).
+The measured Intel macOS cold job took 178 min 39 s. Its timeout is 240 minutes
+to leave room for cache saving and build variance; other targets keep 180 minutes.
+Release optimization settings are retained.
 
 Linux CLI builds use Ubuntu 22.04 runners (glibc 2.35) to support glibc 2.38
 and newer. GNU output metadata records the upstream musl resource target
@@ -66,6 +85,7 @@ python3 scripts/install/test_install_sh.py
 git diff --check
 ```
 
-No workflow run or publication was triggered locally. A six-platform Actions run
-and platform installation remain separate verification. Branch protection may
+No workflow run or publication was triggered locally. Windows checkout and warm
+cache behavior with this change still require an Actions run; platform
+installation remains separate verification. Branch protection may
 still reference removed checks and requires a repository settings change if so.
