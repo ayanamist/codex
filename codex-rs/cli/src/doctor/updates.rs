@@ -26,15 +26,14 @@ use super::DoctorIssue;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::desktop::platform::InstalledApp;
 use super::doctor_install_context;
-use super::doctor_managed_by_npm;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::network;
 
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/ayanamist/codex/releases/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -66,16 +65,12 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
     let mut status = CheckStatus::Ok;
     let summary = "update configuration is locally consistent".to_string();
 
-    if doctor_managed_by_npm(current_exe.as_deref()) {
-        details
-            .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
-    }
     let client = RouteAwareClientPool::new_without_request_logging(
         config.http_client_factory(),
         ClientRouteClass::Other,
     );
 
-    match fetch_latest_version(&client, &install_context).await {
+    match fetch_latest_github_release_version(&client).await {
         Ok(latest_version) => {
             details.push(format!("latest version: {latest_version}"));
             if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
@@ -389,28 +384,13 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
-        InstallMethod::Other => "manual or unknown",
-    }
-}
-
-async fn fetch_latest_version(
-    client: &RouteAwareClientPool,
-    context: &InstallContext,
-) -> Result<String, String> {
-    match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(client).await,
         InstallMethod::Npm
         | InstallMethod::Bun
         | InstallMethod::VitePlus
         | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(client).await,
+        | InstallMethod::Brew => "manual migration to the fork standalone installer",
+        InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::Other => "manual or unknown",
     }
 }
 
@@ -427,17 +407,6 @@ async fn fetch_latest_github_release_version(
         .strip_prefix("rust-v")
         .map(str::to_string)
         .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-async fn fetch_homebrew_cask_version(client: &RouteAwareClientPool) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(client, HOMEBREW_CASK_API_URL)
-        .await
-        .map(|info| info.version)
 }
 
 async fn http_get_json<T>(client: &RouteAwareClientPool, url: &str) -> Result<T, String>
@@ -691,14 +660,21 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "manual migration to the fork standalone installer"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "manual migration to the fork standalone installer"
+        );
+        assert_eq!(
+            update_action_label(&InstallContext {
+                method: InstallMethod::Brew,
+                package_layout: None,
+            }),
+            "manual migration to the fork standalone installer"
         );
         assert_eq!(
             update_action_label(&InstallContext {

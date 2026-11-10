@@ -827,8 +827,8 @@ fn run_update_action(
             let path_env =
                 std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is not set"))?;
             let command_path = resolve_windows_update_command_from_path(cmd, &path_env)?;
-            // Do not let a project-local command or package-manager config
-            // influence the updater after the user accepts the update prompt.
+            // Do not let a project-local command influence the updater
+            // after the user accepts the update prompt.
             let update_cwd = tempfile::tempdir()?;
             // Resolve through PATH without consulting the project cwd. When
             // this returns a .cmd/.bat shim, std::process::Command routes the
@@ -848,7 +848,7 @@ fn run_update_action(
                 .collect();
             std::process::Command::new(&command_path)
                 .args(&normalized_args)
-                // Package managers search parent directories for project config and hooks.
+                // Run the installer outside the project directory.
                 .current_dir("/")
                 .status()?
         }
@@ -889,7 +889,7 @@ fn run_update_command() -> anyhow::Result<()> {
     {
         let Some(action) = codex_tui::get_update_action() else {
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "This installation method cannot update the fork automatically. Use the standalone installer: https://github.com/ayanamist/codex/releases/latest"
             );
         };
         run_update_action(action, /*cli_executable*/ None)

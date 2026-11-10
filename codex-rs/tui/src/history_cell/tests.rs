@@ -1383,7 +1383,7 @@ fn standalone_unix_update_available_history_cell_snapshot() {
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
-    insta::assert_snapshot!(rendered);
+    insta::assert_snapshot!(rendered.replace(CODEX_CLI_VERSION, "0.0.0"));
 }
 
 #[test]
@@ -1392,16 +1392,15 @@ fn standalone_windows_update_available_history_cell_snapshot() {
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
-    insta::assert_snapshot!(rendered);
+    insta::assert_snapshot!(rendered.replace(CODEX_CLI_VERSION, "0.0.0"));
 }
 
 #[test]
-fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
+fn manual_update_available_history_cell_snapshot() {
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
-    insta::assert_snapshot!(rendered);
+    insta::assert_snapshot!(rendered.replace(CODEX_CLI_VERSION, "0.0.0"));
 }
 
 #[test]
