@@ -498,7 +498,13 @@ fn package_tree(
 
 fn stable_version(value: &str) -> Option<semver::Version> {
     let version = semver::Version::parse(value).ok()?;
-    (version.pre.is_empty()
+    let fork_revision = version
+        .pre
+        .as_str()
+        .strip_prefix("ayanamist.")
+        .and_then(|revision| revision.parse::<u64>().ok())
+        .is_some_and(|revision| revision > 0);
+    ((version.pre.is_empty() || fork_revision)
         && version.build.is_empty()
         && (version.major, version.minor, version.patch) != (0, 0, 0))
         .then_some(version)

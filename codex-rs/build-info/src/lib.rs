@@ -12,6 +12,31 @@ use sha2::Sha256;
 
 static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
 
+/// Compare stable upstream versions and numbered stable releases of this fork.
+/// Fork revisions follow their upstream base and are ordered numerically.
+/// Alpha/beta builds and versions with build metadata are outside this channel.
+pub fn is_newer_release(latest: &str, current: &str) -> Option<bool> {
+    fn key(value: &str) -> Option<(u64, u64, u64, u64)> {
+        let version = Version::parse(value.trim()).ok()?;
+        if !version.build.is_empty() {
+            return None;
+        }
+        let revision = if version.pre.is_empty() {
+            0
+        } else {
+            let revision = version.pre.as_str().strip_prefix("ayanamist.")?;
+            let revision = revision.parse::<u64>().ok()?;
+            if revision == 0 {
+                return None;
+            }
+            revision
+        };
+        Some((version.major, version.minor, version.patch, revision))
+    }
+
+    Some(key(latest)? > key(current)?)
+}
+
 /// Initialize build information from the commit stamped into the calling executable.
 ///
 /// The environment lookup intentionally expands at the macro call site so Git

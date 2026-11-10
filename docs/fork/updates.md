@@ -53,6 +53,12 @@ There is no `config.toml` setting for a GitHub repository or installer URL.
 
 ## Release contract and limits
 
+The fork release pipeline now publishes numbered versions such as
+`rust-v0.167.0-ayanamist.1` as stable GitHub releases. Its installers and update
+checks recognize the fork revision. Pushing `fork-release` now allocates the
+tag and publishes automatically. See [release management](release-management.md)
+for rebuilding only the fork entrypoint while reusing pinned upstream helpers.
+
 The default channel requires a published stable release with a `rust-v<VERSION>`
 tag and the assets produced by
 [the release workflow](../../.github/workflows/rust-release.yml): `install.sh`,

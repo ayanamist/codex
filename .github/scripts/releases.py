@@ -7,7 +7,7 @@ import sys
 
 _VERSION_RE = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha(?:\.[0-9]+){0,2}"
-    r"|beta(?:\.[0-9]+)?))?$"
+    r"|beta(?:\.[0-9]+)?|ayanamist\.[1-9][0-9]*))?$"
 )
 
 
@@ -16,7 +16,9 @@ def is_valid_release_version(version: str) -> bool:
 
 
 def is_valid_stable_release_version(version: str) -> bool:
-    return is_valid_release_version(version) and "-" not in version
+    return is_valid_release_version(version) and (
+        "-" not in version or "-ayanamist." in version
+    )
 
 
 def _version_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
@@ -24,7 +26,7 @@ def _version_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
     channel, _, suffix = prerelease.partition(".")
     return (
         tuple(int(part) for part in base.split(".")),
-        {"alpha": 0, "beta": 1, "": 2}[channel],
+        {"alpha": 0, "beta": 1, "": 2, "ayanamist": 3}[channel],
         tuple(int(part) for part in suffix.split(".")) if suffix else (),
     )
 

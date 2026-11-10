@@ -1,5 +1,14 @@
 # Fork notes
 
+- [Fork release management](release-management.md): rebuilding only the Codex
+  entrypoint, reusing pinned upstream helpers, V8 and voice constraints, version
+  sources, and automatic numbered releases on branch push. Keywords: fork,
+  upstream tag, release, automatic tag, version, V8, voice, installer.
+  Implemented: 2026-11-10.
+- [Build and GitHub Release workflows](../../.github/workflows/README.md):
+  retained build, packaging, and GitHub Release automation; removed CI,
+  tests, Issue/PR automation, and external publication. Keywords: GitHub Actions,
+  release, tag, npm, PyPI, R2. Reviewed: 2026-11-10.
 - [CLI update sources](updates.md): standalone CLI and daemon updates through
   `ayanamist/codex` GitHub Releases; installer behavior, release requirements,
   limitations, and verification. Keywords: `codex update`, fork, GitHub Releases,

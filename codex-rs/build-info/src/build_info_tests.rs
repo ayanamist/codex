@@ -10,6 +10,26 @@ use crate::build_id;
 
 const BUILD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
+#[test]
+fn stable_fork_release_ordering() {
+    for (latest, current, expected) in [
+        ("0.167.0-ayanamist.1", "0.167.0", Some(true)),
+        ("0.167.0-ayanamist.10", "0.167.0-ayanamist.2", Some(true)),
+        ("0.167.0-ayanamist.2", "0.167.0-ayanamist.10", Some(false)),
+        ("0.168.0-ayanamist.1", "0.167.0-ayanamist.99", Some(true)),
+        ("0.167.1-ayanamist.1", "0.167.0-ayanamist.99", Some(true)),
+        ("0.167.0", "0.167.0-ayanamist.1", Some(false)),
+        ("0.167.0-ayanamist.1", "0.167.0-ayanamist.1", Some(false)),
+        ("0.167.0-ayanamist.0", "0.167.0", None),
+        ("0.167.0-ayanamist.01", "0.167.0", None),
+        ("0.167.0-alpha.1", "0.166.0", None),
+        ("0.167.0+ayanamist.1", "0.167.0", None),
+        ("0.167.0.1", "0.167.0", None),
+    ] {
+        assert_eq!(crate::is_newer_release(latest, current), expected);
+    }
+}
+
 /// A packaged runtime takes its release identity from its package manifest.
 #[test]
 fn packaged_runtime_uses_manifest_version() {

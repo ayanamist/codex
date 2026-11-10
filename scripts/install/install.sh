@@ -76,8 +76,8 @@ validate_version() {
     return
   fi
 
-  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
+  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?|-ayanamist\.[1-9][0-9]*)?$'; then
+    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-ayanamist.N|-alpha[.N[.M]]|-beta[.N]]." >&2
     return 1
   fi
 }

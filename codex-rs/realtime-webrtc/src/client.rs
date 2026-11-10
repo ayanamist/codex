@@ -171,6 +171,8 @@ impl VoiceHost {
     }
 
     pub async fn connect(package: &CodexPackageLayout, build_commit: &str) -> Result<Self> {
+        // Reuse a pinned upstream helper without changing the app's build identity.
+        let build_commit = option_env!("CODEX_VOICE_HELPER_COMMIT").unwrap_or(build_commit);
         let root = package.package_dir.as_path().canonicalize()?;
         let name = if cfg!(windows) {
             "codex-voice-host.exe"

@@ -11,6 +11,15 @@ use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[test]
+fn numbered_fork_versions_use_the_stable_install_channel() {
+    assert!(super::stable_version("0.167.0-ayanamist.1").is_some());
+    assert!(super::stable_version("0.167.0-ayanamist.10").is_some());
+    assert!(super::stable_version("0.167.0-ayanamist.0").is_none());
+    assert!(super::stable_version("0.167.0-alpha.1").is_none());
+    assert!(super::stable_version("0.167.0+local").is_none());
+}
+
 fn daemon(home: &std::path::Path) -> crate::Daemon {
     let state = home.join("app-server-daemon");
     crate::Daemon {

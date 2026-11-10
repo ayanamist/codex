@@ -4,6 +4,34 @@ use pretty_assertions::assert_eq;
 
 use super::child_environment;
 
+#[tokio::test]
+#[ignore = "requires CODEX_TEST_UPSTREAM_VOICE_PACKAGE and a compiled CODEX_VOICE_HELPER_COMMIT"]
+async fn pinned_upstream_voice_package_accepts_a_different_app_commit() -> anyhow::Result<()> {
+    let root = std::path::PathBuf::from(std::env::var("CODEX_TEST_UPSTREAM_VOICE_PACKAGE")?);
+    let exe = root.join(if cfg!(windows) {
+        "bin/codex.exe"
+    } else {
+        "bin/codex"
+    });
+    let context = codex_install_context::InstallContext::from_exe(
+        cfg!(target_os = "macos"),
+        Some(&exe),
+        None,
+    );
+    let actual_app_commit = "1111111111111111111111111111111111111111";
+    assert_ne!(
+        option_env!("CODEX_VOICE_HELPER_COMMIT"),
+        Some(actual_app_commit)
+    );
+    let host = super::VoiceHost::connect(
+        &context.package_layout.expect("canonical upstream package"),
+        actual_app_commit,
+    )
+    .await?;
+    host.initialize_runtime().await?.close().await?;
+    Ok(())
+}
+
 #[test]
 fn forwards_only_explicit_device_network_and_os_inputs() {
     let input = [

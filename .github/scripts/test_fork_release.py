@@ -1,0 +1,257 @@
+import json
+from pathlib import Path
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import fork_release as release
+from releases import is_valid_stable_release_version, should_make_latest, should_update_version
+
+
+class ForkReleaseTests(unittest.TestCase):
+    def reference(self, revision, commit, base="0.167.0", kind="commit"):
+        return {
+            "ref": f"refs/tags/rust-v{base}-ayanamist.{revision}",
+            "object": {"type": kind, "sha": commit},
+        }
+
+    def test_push_allocates_the_next_numeric_revision(self):
+        commit = "b" * 40
+        references = [self.reference(2, "a" * 40), self.reference(10, "a" * 40)]
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+            "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, references, {}]
+        ) as api:
+            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-ayanamist.11", True))
+        self.assertEqual(api.call_args.kwargs["data"], {
+            "ref": "refs/tags/rust-v0.167.0-ayanamist.11", "sha": commit,
+        })
+
+    def test_new_upstream_base_starts_at_revision_one(self):
+        commit = "b" * 40
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+            "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, [], {}]
+        ) as api:
+            self.assertEqual(release.automatic_tag("0.168.0", commit), ("rust-v0.168.0-ayanamist.1", True))
+        self.assertIn("rust-v0.168.0-ayanamist.", api.call_args_list[1].args[0])
+
+    def test_retry_reuses_the_same_commit_tag_or_skips_its_published_release(self):
+        commit = "b" * 40
+        for existing, should_publish in [(None, True), ({"draft": True}, True), ({"draft": False}, False)]:
+            with self.subTest(existing=existing), patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+                "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, [self.reference(3, commit)], existing]
+            ) as api:
+                self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-ayanamist.3", should_publish))
+                self.assertFalse(any(call.kwargs.get("data") for call in api.call_args_list))
+
+    def test_an_already_published_commit_is_skipped_even_with_a_newer_reserved_tag(self):
+        commit = "b" * 40
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+            "fork_release.github_json", side_effect=[
+                {"object": {"sha": commit}}, [self.reference(1, commit), self.reference(2, commit)],
+                None, {"draft": False},
+            ]
+        ):
+            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-ayanamist.1", False))
+
+    def test_annotated_tags_are_peeled_before_matching_the_commit(self):
+        commit = "b" * 40
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+            "fork_release.github_json", side_effect=[
+                {"object": {"sha": commit}}, [self.reference(1, "a" * 40, kind="tag")],
+                {"object": {"type": "commit", "sha": commit}}, None,
+            ]
+        ):
+            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-ayanamist.1", True))
+
+    def test_superseded_push_does_not_reserve_a_tag(self):
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+            "fork_release.github_json", return_value={"object": {"sha": "c" * 40}}
+        ) as api:
+            self.assertEqual(release.automatic_tag("0.167.0", "b" * 40), ("", False))
+            self.assertEqual(api.call_count, 1)
+
+    def test_resolve_exports_the_automatic_tag_for_the_same_workflow(self):
+        commit, upstream = "b" * 40, "a" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "outputs"
+            with patch("fork_release.github_json", return_value={"tag_name": "rust-v0.167.0", "draft": False, "prerelease": False}), patch(
+                "fork_release.run", side_effect=["", upstream, "", commit]
+            ), patch("fork_release.automatic_tag", return_value=("rust-v0.167.0-ayanamist.4", True)):
+                release.resolve(None, output)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["tag"], "rust-v0.167.0-ayanamist.4")
+            self.assertEqual(values["fork_commit"], commit)
+            self.assertEqual(values["upstream_commit"], upstream)
+            self.assertEqual(values["should_publish"], "true")
+
+    def test_tag_creation_sends_a_structured_json_body(self):
+        import subprocess
+        result = subprocess.CompletedProcess([], 0, "{}", "")
+        with patch("fork_release.subprocess.run", return_value=result) as run:
+            body = {"ref": "refs/tags/rust-v0.167.0-ayanamist.1", "sha": "b" * 40}
+            release.github_json("repos/ayanamist/codex/git/refs", data=body)
+            self.assertEqual(json.loads(run.call_args.kwargs["input"]), body)
+            self.assertEqual(run.call_args.args[0][-4:], ["--method", "POST", "--input", "-"])
+
+    def test_fork_versions_advance_without_rolling_back_upstream_base(self):
+        self.assertTrue(is_valid_stable_release_version("0.167.0-ayanamist.1"))
+        self.assertTrue(should_update_version("0.167.0-ayanamist.10", "0.167.0-ayanamist.2"))
+        self.assertTrue(should_update_version("0.168.0-ayanamist.1", "0.167.0-ayanamist.99"))
+        self.assertFalse(should_update_version("0.167.0-ayanamist.99", "0.168.0-ayanamist.1"))
+        self.assertFalse(should_make_latest("0.167.0-ayanamist.2", {
+            "tag_name": "rust-v0.168.0-ayanamist.1", "draft": False, "prerelease": False,
+        }))
+        for invalid in ["rust-v0.167.0", "rust-v0.167.0-ayanamist.0", "rust-v0.167.0-ayanamist.01", "rust-v0.167.0-ayanamist.1/invalid"]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                release.parse_tag(invalid)
+
+    def test_version_stamp_preserves_registry_packages_and_lock_references(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            crate = root / "codex-rs/cli"
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname = "codex-cli"\nversion.workspace = true\n')
+            implicit = root / "codex-rs/implicit"
+            implicit.mkdir()
+            (implicit / "Cargo.toml").write_text('[package]\nname = "codex-implicit"\nversion.workspace = true\n')
+            (root / "codex-rs/Cargo.toml").write_text(
+                '[workspace]\nmembers = ["cli"]\n[workspace.package]\nversion = "0.167.0"\n'
+            )
+            lock = root / "codex-rs/Cargo.lock"
+            lock.write_text('version = 4\n[[package]]\nname = "codex-cli"\nversion = "0.0.0"\ndependencies = ["codex-implicit 0.0.0"]\n[[package]]\nname = "codex-implicit"\nversion = "0.0.0"\n[[package]]\nname = "codex-cli"\nversion = "0.167.0"\nsource = "registry+example"\n')
+            release.set_workspace_version(root, "0.167.0", "0.167.0-ayanamist.1")
+            self.assertIn('dependencies = ["codex-implicit 0.167.0-ayanamist.1"]', lock.read_text())
+            self.assertIn('name = "codex-implicit"\nversion = "0.167.0-ayanamist.1"', lock.read_text())
+            self.assertIn('version = "0.167.0"\nsource = "registry+example"', lock.read_text())
+            self.assertIn('version = "0.167.0-ayanamist.1"', (root / "codex-rs/Cargo.toml").read_text())
+
+    def test_archive_extraction_rejects_traversal_and_links(self):
+        for name, kind in [("../outside", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE), ("bin/codex", tarfile.SYMTYPE)]:
+            with self.subTest(name=name, kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "package.tar.gz"
+                with tarfile.open(archive, "w:gz") as output:
+                    member = tarfile.TarInfo(name)
+                    member.type = kind
+                    if kind == tarfile.SYMTYPE:
+                        member.linkname = "/outside"
+                    output.addfile(member)
+                with self.assertRaises(ValueError):
+                    release.extract_package(archive, root / "package")
+
+    def make_package(self, root):
+        package = root / "package"
+        target = release.TARGETS[0]
+        commit = "a" * 40
+        metadata = {
+            "layoutVersion": 1, "version": "0.167.0", "target": target,
+            "variant": "codex", "entrypoint": "bin/codex", "execServer": "bin/codex-exec-server",
+            "resourcesDir": "codex-resources", "pathDir": "codex-path",
+        }
+        files = {
+            "bin/codex": b"upstream codex", "bin/codex-code-mode-host": b"signed host",
+            "bin/codex-exec-server": b"signed executor", "codex-path/rg": b"ripgrep",
+            "codex-resources/bwrap": b"upstream bwrap",
+            "codex-resources/voice/bin/codex-voice-host": b"signed voice helper",
+            "codex-resources/voice/lib/gstreamer.so": b"native runtime",
+            "codex-resources/voice/runtime.json": json.dumps({"sourceCommit": commit}).encode(),
+        }
+        for name, contents in files.items():
+            path = package / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+        voice = {
+            "schemaVersion": 1, "buildCommit": commit, "appVersion": "0.167.0",
+            "sha256": {name: release.digest(package / name) for name in files if name == "bin/codex" or "/voice/" in name},
+        }
+        release.write_json(package / "codex-package.json", metadata)
+        release.write_json(package / "codex-resources/voice/manifest.json", voice)
+        release.write_json(package / "fork-build.json", {
+            "version": "0.167.0-ayanamist.2", "upstreamTag": "rust-v0.167.0",
+            "upstreamCommit": commit, "forkCommit": "b" * 40, "target": target,
+            "upstreamFiles": {path.relative_to(package).as_posix(): release.digest(path) for path in package.rglob("*") if path.is_file()},
+        })
+        return package, files
+
+    def test_overlay_preserves_helpers_and_records_both_build_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, files = self.make_package(root)
+            binary = root / "codex"
+            binary.write_bytes(b"fork codex")
+            archive = release.assemble(package, binary, root / "dist")
+            extracted = root / "extracted"
+            release.extract_package(archive, extracted)
+            for name, original in files.items():
+                if name != "bin/codex":
+                    self.assertEqual((extracted / name).read_bytes(), original)
+            self.assertEqual((extracted / "bin/codex").read_bytes(), b"fork codex")
+            metadata = json.loads((extracted / "codex-package.json").read_text())
+            self.assertEqual(metadata["version"], "0.167.0-ayanamist.2")
+            voice = json.loads((extracted / "codex-resources/voice/manifest.json").read_text())
+            self.assertEqual(voice["buildCommit"], "a" * 40)
+            self.assertEqual(voice["appBuildCommit"], "b" * 40)
+            self.assertEqual(voice["sha256"]["bin/codex"], release.digest(binary))
+
+    def test_overlay_rejects_corrupted_upstream_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, _ = self.make_package(root)
+            (package / "codex-resources/voice/lib/gstreamer.so").write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                release.assemble(package, root / "unused", root / "dist")
+
+    def test_upstream_archive_checksum_is_required(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            archive.write_bytes(b"contents")
+            manifest = root / "SHA256SUMS"
+            manifest.write_text(f"{release.digest(archive)}  {archive.name}\n")
+            release.verify_archive(archive, manifest)
+            archive.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                release.verify_archive(archive, manifest)
+
+    def test_first_release_handles_only_not_found_as_an_empty_channel(self):
+        import subprocess
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        denied = subprocess.CompletedProcess([], 1, "", "gh: Forbidden (HTTP 403)")
+        with patch("fork_release.subprocess.run", return_value=missing):
+            self.assertIsNone(release.github_json("repos/example/releases/latest", missing_ok=True))
+        with patch("fork_release.subprocess.run", return_value=denied), self.assertRaises(RuntimeError):
+            release.github_json("repos/example/releases/latest", missing_ok=True)
+
+    def test_publication_requires_all_platforms_and_keeps_releases_immutable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with self.assertRaisesRegex(ValueError, "six platform"):
+                release.publish("rust-v0.167.0-ayanamist.1", directory)
+            for target in release.TARGETS:
+                (directory / f"codex-package-{target}.tar.gz").write_bytes(b"fixture archive")
+            with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+                "fork_release.github_json", return_value={"draft": False}
+            ), self.assertRaisesRegex(ValueError, "already published"):
+                release.publish("rust-v0.167.0-ayanamist.1", directory)
+
+    def test_first_publication_is_stable_and_latest_after_all_assets_upload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for target in release.TARGETS:
+                (directory / f"codex-package-{target}.tar.gz").write_bytes(b"fixture archive")
+            with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+                "fork_release.github_json", return_value=None
+            ), patch("fork_release.run", return_value="b" * 40) as run:
+                release.publish("rust-v0.167.0-ayanamist.1", directory)
+            commands = [call.args for call in run.call_args_list]
+            publication = [args for args in commands if args[:2] == ("gh", "release")]
+            self.assertEqual([args[2] for args in publication], ["create", "upload", "edit"])
+            self.assertIn("--draft", publication[0])
+            self.assertIn("--prerelease=false", publication[-1])
+            self.assertIn("--latest=true", publication[-1])
+            self.assertEqual(len((directory / "codex-package_SHA256SUMS").read_text().splitlines()), 6)
+
+
+if __name__ == "__main__":
+    unittest.main()
