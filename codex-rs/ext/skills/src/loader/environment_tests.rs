@@ -162,6 +162,73 @@ async fn executor_bundle_parser_matches_direct_environment_loader() {
 }
 
 #[tokio::test]
+async fn environment_invocation_policy_falls_back_to_frontmatter() {
+    for (yaml, expected) in [
+        (None, false),
+        (Some("interface: {display_name: Demo}"), false),
+        (Some("policy: {}"), false),
+        (Some("policy: {products: [codex]}"), false),
+        (Some("policy: {allow_implicit_invocation: true}"), true),
+        (Some("policy: {allow_implicit_invocation: false}"), false),
+    ] {
+        let root = tempdir().expect("tempdir");
+        let skill_dir = root.path().join("demo");
+        fs::create_dir_all(&skill_dir).expect("skill directory");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo skill\ndisable-model-invocation: true\n---\n",
+        )
+        .expect("skill");
+        if let Some(yaml) = yaml {
+            fs::create_dir_all(skill_dir.join("agents")).expect("metadata directory");
+            fs::write(skill_dir.join("agents/openai.yaml"), yaml).expect("metadata");
+        }
+        let root_uri = PathUri::from_host_native_path(root.path()).expect("root URI");
+        let direct = load_environment_skills_from_root(
+            &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+            &root_uri,
+            Some(Product::Codex),
+        )
+        .await;
+        assert_eq!(direct.warnings, Vec::<String>::new());
+        assert_eq!(direct.skills.len(), 1);
+        assert_eq!(direct.skills[0].allows_implicit_invocation(), expected);
+        if yaml == Some("policy: {products: [codex]}") {
+            assert_eq!(
+                direct.skills[0].policy.as_ref().unwrap().products,
+                vec![Product::Codex]
+            );
+        }
+
+        let discovery = discover_capability_roots(
+            LOCAL_FS.as_ref(),
+            CapabilityRootsDiscoverParams {
+                roots: vec![CapabilityRootDiscoverRequest {
+                    id: "demo".to_string(),
+                    path: root_uri,
+                    sandbox: None,
+                }],
+            },
+        )
+        .await
+        .expect("capability discovery");
+        let bundled = load_environment_skills_from_discovery(
+            discovery.roots.first().expect("discovered root"),
+            Some(Product::Codex),
+        );
+        assert_eq!(bundled.warnings, direct.warnings);
+        assert_eq!(
+            bundled
+                .skills
+                .into_iter()
+                .map(|skill| skill.metadata)
+                .collect::<Vec<_>>(),
+            direct.skills
+        );
+    }
+}
+
+#[tokio::test]
 async fn executor_bundle_preserves_parent_namespace_and_manifest_precedence() {
     let plugin = tempdir().expect("tempdir");
     for (relative_path, name) in [

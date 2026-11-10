@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::SkillPolicy;
+
 const MAX_NAME_LEN: usize = 64;
 
 #[derive(Debug, Deserialize)]
@@ -11,6 +13,8 @@ struct SkillFrontmatter {
     description: Option<String>,
     #[serde(default)]
     metadata: SkillFrontmatterMetadata,
+    #[serde(default, rename = "disable-model-invocation")]
+    disable_model_invocation: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -25,6 +29,20 @@ pub struct ParsedSkillFrontmatter {
     pub name: String,
     pub description: String,
     pub short_description: Option<String>,
+    pub disable_model_invocation: Option<bool>,
+}
+
+impl ParsedSkillFrontmatter {
+    /// Falls back to `SKILL.md` only when `agents/openai.yaml` leaves invocation unset.
+    pub fn resolve_policy(&self, mut policy: Option<SkillPolicy>) -> Option<SkillPolicy> {
+        if let Some(disable_model_invocation) = self.disable_model_invocation {
+            policy
+                .get_or_insert_with(SkillPolicy::default)
+                .allow_implicit_invocation
+                .get_or_insert(!disable_model_invocation);
+        }
+        policy
+    }
 }
 
 /// Error produced while parsing or validating `SKILL.md` metadata.
@@ -88,6 +106,7 @@ pub fn parse_skill_frontmatter_metadata(
         name,
         description,
         short_description,
+        disable_model_invocation: parsed.disable_model_invocation,
     })
 }
 

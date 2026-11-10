@@ -160,6 +160,39 @@ policy:
 }
 
 #[tokio::test]
+async fn host_invocation_policy_falls_back_to_frontmatter() {
+    for (yaml, expected) in [
+        (None, false),
+        (Some("interface: {display_name: Demo}"), false),
+        (Some("policy: {}"), false),
+        (Some("policy: {products: [codex]}"), false),
+        (Some("policy: {allow_implicit_invocation: true}"), true),
+        (Some("policy: {allow_implicit_invocation: false}"), false),
+    ] {
+        let root = TempDir::new().expect("temp dir");
+        write_skill(
+            &root,
+            "demo",
+            "name: demo\ndescription: Demo skill\ndisable-model-invocation: true",
+        );
+        if let Some(yaml) = yaml {
+            write_metadata(&root, "demo", yaml);
+        }
+        let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+
+        assert_eq!(snapshot.errors, Vec::new());
+        assert_eq!(snapshot.skills.len(), 1);
+        assert_eq!(snapshot.skills[0].allows_implicit_invocation(), expected);
+        if yaml == Some("policy: {products: [codex]}") {
+            assert_eq!(
+                snapshot.skills[0].policy.as_ref().unwrap().products,
+                vec![Product::Codex]
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn invalid_optional_metadata_fails_open() {
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(&root, "demo", "name: demo\ndescription: Demo skill");

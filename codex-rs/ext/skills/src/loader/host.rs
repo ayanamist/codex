@@ -367,17 +367,20 @@ async fn parse_skill_file(
         load_host_skill_metadata(file_system, path, &metadata, plugin_root),
     );
     let contents = contents.map_err(|error| format!("failed to read file: {error}"))?;
-    let ParsedSkillFrontmatter {
-        name,
-        description,
-        short_description,
-    } = parse_skill_frontmatter_metadata(&contents, || default_skill_name(path))
+    let frontmatter = parse_skill_frontmatter_metadata(&contents, || default_skill_name(path))
         .map_err(|error| error.to_string())?;
     let LoadedSkillMetadata {
         interface,
         dependencies,
         policy,
     } = loaded_metadata;
+    let policy = frontmatter.resolve_policy(policy);
+    let ParsedSkillFrontmatter {
+        name,
+        description,
+        short_description,
+        ..
+    } = frontmatter;
 
     Ok(SkillMetadata {
         name,

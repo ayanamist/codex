@@ -69,12 +69,9 @@ impl ParsedEnvironmentSkill {
                 (None, None),
             ),
         };
-        let ParsedSkillFrontmatter {
-            name: base_name,
-            description,
-            short_description,
-        } = parse_skill_frontmatter_metadata(&contents, || default_skill_name(&skill.path))
-            .map_err(|err| err.to_string())?;
+        let frontmatter =
+            parse_skill_frontmatter_metadata(&contents, || default_skill_name(&skill.path))
+                .map_err(|err| err.to_string())?;
         let (dependencies, policy) = match &skill.metadata {
             SkillMetadataDiscovery::Present(_) | SkillMetadataDiscovery::Absent => {
                 discovered_metadata
@@ -83,6 +80,13 @@ impl ParsedEnvironmentSkill {
                 probe_skill_metadata(file_system, metadata_path).await
             }
         };
+        let policy = frontmatter.resolve_policy(policy);
+        let ParsedSkillFrontmatter {
+            name: base_name,
+            description,
+            short_description,
+            ..
+        } = frontmatter;
 
         Ok(Self {
             path_to_skills_md: skill.path.clone(),
@@ -237,32 +241,19 @@ pub fn load_environment_skills_from_discovery(
     for skill in &discovery.skills {
         let plugin_namespace =
             nearest_plugin_namespace(&skill.instructions.path, &plugin_namespaces);
-        let ParsedSkillFrontmatter {
-            name: base_name,
-            description,
-            short_description,
-        } = match parse_skill_frontmatter_metadata(&skill.instructions.contents, || {
-            default_skill_name(&skill.instructions.path)
-        }) {
-            Ok(frontmatter) => frontmatter,
-            Err(error) => {
-                outcome.warnings.push(format!(
-                    "Failed to load environment skill at {}: {error}",
-                    skill.instructions.path
-                ));
-                continue;
-            }
-        };
-        let name = plugin_namespace
-            .map(|namespace| format!("{namespace}:{base_name}"))
-            .unwrap_or(base_name);
-        if let Err(error) = validate_len(&name, MAX_QUALIFIED_NAME_LEN, "qualified name") {
-            outcome.warnings.push(format!(
-                "Failed to load environment skill at {}: {error}",
-                skill.instructions.path
-            ));
-            continue;
-        }
+        let frontmatter =
+            match parse_skill_frontmatter_metadata(&skill.instructions.contents, || {
+                default_skill_name(&skill.instructions.path)
+            }) {
+                Ok(frontmatter) => frontmatter,
+                Err(error) => {
+                    outcome.warnings.push(format!(
+                        "Failed to load environment skill at {}: {error}",
+                        skill.instructions.path
+                    ));
+                    continue;
+                }
+            };
         let (dependencies, policy) = skill
             .metadata
             .as_ref()
@@ -278,6 +269,23 @@ pub fn load_environment_skills_from_discovery(
             })
             .map(|metadata| (metadata.dependencies, metadata.policy))
             .unwrap_or((None, None));
+        let policy = frontmatter.resolve_policy(policy);
+        let ParsedSkillFrontmatter {
+            name: base_name,
+            description,
+            short_description,
+            ..
+        } = frontmatter;
+        let name = plugin_namespace
+            .map(|namespace| format!("{namespace}:{base_name}"))
+            .unwrap_or(base_name);
+        if let Err(error) = validate_len(&name, MAX_QUALIFIED_NAME_LEN, "qualified name") {
+            outcome.warnings.push(format!(
+                "Failed to load environment skill at {}: {error}",
+                skill.instructions.path
+            ));
+            continue;
+        }
         let metadata = EnvironmentSkillMetadata {
             path_to_skills_md: skill.instructions.path.clone(),
             name,

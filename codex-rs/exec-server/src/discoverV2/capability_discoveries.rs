@@ -265,6 +265,7 @@ fn parse_root(
                 tracing::warn!(path = %metadata.path, %error, "ignoring invalid discovered skill metadata");
             }).ok()
         }).unwrap_or_default();
+        let policy = parsed.resolve_policy(metadata.policy);
         skills.push(ExecutorSkill {
             name: namespace
                 .map(|namespace| format!("{namespace}:{}", parsed.name))
@@ -280,7 +281,7 @@ fn parse_root(
                     path: location.root.clone(),
                 }),
             dependencies: metadata.dependencies,
-            policy: metadata.policy,
+            policy,
         });
     }
     let content = if let (Some(plugin), Some(mut files)) = (location.plugin, discovery.plugin) {

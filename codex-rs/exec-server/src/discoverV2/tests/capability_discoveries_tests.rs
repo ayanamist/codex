@@ -369,6 +369,77 @@ policy:
 }
 
 #[tokio::test]
+async fn discovery_invocation_policy_falls_back_to_frontmatter() -> anyhow::Result<()> {
+    use codex_protocol::protocol::Product;
+    use codex_skills::SkillPolicy;
+
+    for (yaml, allow_implicit_invocation, products) in [
+        (None, false, vec![]),
+        (Some("interface: {display_name: Demo}"), false, vec![]),
+        (Some("policy: {}"), false, vec![]),
+        (
+            Some("policy: {products: [codex]}"),
+            false,
+            vec![Product::Codex],
+        ),
+        (
+            Some("policy: {allow_implicit_invocation: true}"),
+            true,
+            vec![],
+        ),
+        (
+            Some("policy: {allow_implicit_invocation: false}"),
+            false,
+            vec![],
+        ),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let request = request(temp.path())?;
+        let plugin_root = "codex/plugins/cache/test/demo/local";
+        write(
+            temp.path(),
+            &format!("{plugin_root}/.codex-plugin/plugin.json"),
+            MANIFEST,
+        )?;
+        for root in [
+            "codex/skills/deploy".to_string(),
+            format!("{plugin_root}/skills/deploy"),
+        ] {
+            write(
+                temp.path(),
+                &format!("{root}/SKILL.md"),
+                &SKILL.replace(
+                    "description:",
+                    "disable-model-invocation: true\ndescription:",
+                ),
+            )?;
+            if let Some(yaml) = yaml {
+                write(temp.path(), &format!("{root}/agents/openai.yaml"), yaml)?;
+            }
+        }
+        let manager = CapabilityManager::new(LocalFileSystem::unsandboxed());
+        manager.seed_prewarmed_locations(request).await?;
+        let response = manager
+            .get_or_refresh_discovery(DiscoverV2CapabilitiesRequest {
+                cwd: PathUri::from_host_native_path(temp.path().join("project"))?,
+                sandbox: None,
+            })
+            .await?;
+        let expected = Some(SkillPolicy {
+            allow_implicit_invocation: Some(allow_implicit_invocation),
+            products,
+        });
+        assert_eq!(response.skills.len(), 1);
+        assert_eq!(response.skills[0].policy, expected);
+        assert_eq!(response.plugins.len(), 1);
+        assert_eq!(response.plugins[0].skills.len(), 1);
+        assert_eq!(response.plugins[0].skills[0].policy, expected);
+        assert_eq!(response.warnings, Vec::<String>::new());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn standalone_skills_retain_their_search_roots() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let request = request(temp.path())?;
