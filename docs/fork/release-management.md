@@ -22,6 +22,57 @@ glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings, commit hash,
 SemVer suffix, paths-ignore, platform matrix, x64, ARM64, cache eviction,
 source replacement, V8 snapshot, submodules.
 
+## Upstream integration: rust-v0.167.1
+
+Integrated on 2026-11-11 from fork `aeae161db7` using the exact annotated
+upstream tag `rust-v0.167.1` (tag object
+`595a35e837a1b6752e60a5de85b89adf415b0ccb`, release commit
+`0a94398fa60c4fac0e7659e4213a0a36e613dd46`). `git ls-remote --tags upstream`
+confirmed both identities before merging. This adds three upstream commits
+covering incremental tool declarations and their Amazon Bedrock restriction.
+
+The sole merge conflict was the workspace version: retain the new upstream
+base `0.167.1`, as required by `resolve`'s release-base validation. Fork release
+workflows and production overrides otherwise merged without conflicts.
+`test_resolve_exports_the_automatic_tag_for_the_same_workflow` previously read
+the real workspace manifest while mocking a `0.167.0` release; the upgrade
+exposed that mismatch. It now supplies an isolated manifest and toolchain
+fixture, so subsequent upstream version changes do not invalidate the test.
+
+The two new regular-Responses snapshots initially failed three cases because
+their tool-schema hashes differed from the observed definitions. The observed
+namespace hashes match the existing, passing Responses Lite snapshots.
+Comparison after stripping `hash=<16 hex digits>` confirmed that the entire
+snapshot bodies otherwise matched. Only those hashes were synchronized;
+production code and scenario assertions retain the upstream implementation.
+
+Verification passed 47 `codex-features` unit tests, 14 incremental-tool and
+resume integration cases, 26 fork-release script tests, 24 general release
+script tests, Rust formatting for the affected packages, and Git whitespace
+checks. Core integration tests require the `test_stdio_server` helper and the
+repository test recipe's 8 MiB thread stack; the first attempt without these
+failed on the missing helper and a stack overflow.
+
+```sh
+git ls-remote --tags upstream refs/tags/rust-v0.167.1 'refs/tags/rust-v0.167.1^{}'
+python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 -m unittest discover -s .github/scripts -p test_releases.py
+git diff --check --cached
+cd codex-rs
+cargo fmt -p codex-core -p codex-features -- --check
+cargo test --offline -p codex-features --lib
+cargo build --offline -p codex-rmcp-client --bin test_stdio_server
+RUST_MIN_STACK=8388608 cargo test --offline -p codex-core --test all \
+  suite::scenarios::incremental_tools -- --nocapture
+```
+
+Cargo normalizes 171 source-less workspace package versions in `Cargo.lock`
+from `0.0.0` to `0.167.1` during local testing. Parsed lockfile comparison
+confirmed no other package changes; retain the original upstream lockfile
+after verification, consistent with the existing release-stamping procedure.
+Local tests do not establish that the three platform packages build or that
+GitHub release publication succeeds.
+
 ## Release procedure
 
 Keep `fork-release` as the integration branch. After upstream publishes a stable

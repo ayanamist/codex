@@ -110,8 +110,12 @@ class ForkReleaseTests(unittest.TestCase):
     def test_resolve_exports_the_automatic_tag_for_the_same_workflow(self):
         commit, upstream = "b" * 40, "a" * 40
         with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "outputs"
-            with patch("fork_release.github_json", return_value={"tag_name": "rust-v0.167.0", "draft": False, "prerelease": False}), patch(
+            root = Path(temporary)
+            output = root / "outputs"
+            (root / "codex-rs").mkdir()
+            (root / "codex-rs/Cargo.toml").write_text('[workspace.package]\nversion = "0.167.0"\n')
+            (root / "codex-rs/rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.95.0"\n')
+            with patch("fork_release.ROOT", root), patch("fork_release.github_json", return_value={"tag_name": "rust-v0.167.0", "draft": False, "prerelease": False}), patch(
                 "fork_release.run", side_effect=["", upstream, "", commit]
             ), patch("fork_release.automatic_tag", return_value=("rust-v0.167.0-fork.bbbbbbbb", True)):
                 release.resolve(None, output)

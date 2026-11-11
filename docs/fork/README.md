@@ -29,7 +29,8 @@
   helper source coverage, standalone executor, Cargo source replacement,
   V8 source snapshot, submodule downloads. A pinned 405 KB snapshot now avoids
   V8/ICU git checkout; Linux prebuilt V8 execution was verified.
-  Implemented: 2026-11-10.
+  Implemented: 2026-11-10. Latest upstream integration: 2026-11-11,
+  `rust-v0.167.1`; workspace version conflict and isolated release-test fixture.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,
   tests, Issue/PR automation, and external publication. Keywords: GitHub Actions,
