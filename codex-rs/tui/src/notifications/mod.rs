@@ -56,6 +56,7 @@ fn supports_osc9(terminal: &TerminalInfo) -> bool {
         TerminalName::Ghostty
             | TerminalName::Iterm2
             | TerminalName::Kitty
+            | TerminalName::VsCode
             | TerminalName::WarpTerminal
             | TerminalName::WezTerm
     )
@@ -103,6 +104,7 @@ mod tests {
             TerminalName::Ghostty,
             TerminalName::Iterm2,
             TerminalName::Kitty,
+            TerminalName::VsCode,
             TerminalName::WarpTerminal,
             TerminalName::WezTerm,
         ] {
@@ -122,7 +124,6 @@ mod tests {
             TerminalName::GnomeTerminal,
             TerminalName::Konsole,
             TerminalName::Unknown,
-            TerminalName::VsCode,
             TerminalName::Vte,
             TerminalName::WindowsTerminal,
         ] {
