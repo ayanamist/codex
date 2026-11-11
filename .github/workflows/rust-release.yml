@@ -119,7 +119,7 @@ jobs:
         run: python .github/scripts/prepare_rusty_v8_source.py
       - name: Adapt application version reads in the build checkout
         run: |
-          python .github/scripts/prepare_fork_sources.py \
+          python -X utf8 .github/scripts/prepare_fork_sources.py \
             --report build-metrics/fork-source-preparation.json
       - name: Fingerprint release build settings without the package version
         id: build_settings

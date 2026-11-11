@@ -59,6 +59,9 @@
   stamps feed a common runtime interface; a new-stamp probe preserves all
   49 library cache hits. Keywords: source preparation, tokenizer, upstream
   merges, `application_version`, `CODEX_RELEASE_VERSION`, executable stamp.
+  Windows follow-up: run `42972181582` exposed implicit CP1252 source decoding;
+  the adapter now uses explicit UTF-8 I/O, with LF/CRLF and full-workspace
+  encoding regression coverage. Keywords: UTF-8, CP1252, UnicodeDecodeError.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,
   tests, Issue/PR automation, and external publication. Keywords: GitHub Actions,

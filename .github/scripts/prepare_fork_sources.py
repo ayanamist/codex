@@ -326,9 +326,9 @@ def audit_version_reads(source: str) -> None:
 
 def prepare(workspace: Path, *, check: bool = False) -> dict:
     workspace = workspace.resolve()
-    manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
+    manifest = tomllib.loads((workspace / "Cargo.toml").read_text(encoding="utf-8"))
     original_version = manifest["workspace"]["package"]["version"]
-    root_text = (workspace / "Cargo.toml").read_text()
+    root_text = (workspace / "Cargo.toml").read_text(encoding="utf-8")
     root_normalized = root_text
     if original_version != "0.0.0":
         root_normalized, count = re.subn(
@@ -348,7 +348,7 @@ def prepare(workspace: Path, *, check: bool = False) -> dict:
             owner = owner.parent
         if owner == workspace or owner == workspace / "build-info":
             continue
-        original = path.read_text()
+        original = path.read_text(encoding="utf-8")
         try:
             source = clap_versions(version_reads(original))
             edits, symbols = constants(source)
@@ -376,12 +376,12 @@ def prepare(workspace: Path, *, check: bool = False) -> dict:
     # Resolve the release executable entry points from manifests, not fixed paths.
     found = set()
     for owner in {owner for owner in owners.values()}:
-        package = tomllib.loads((owner / "Cargo.toml").read_text())
+        package = tomllib.loads((owner / "Cargo.toml").read_text(encoding="utf-8"))
         for binary in package.get("bin", []):
             if binary["name"] not in {"codex", "codex-exec-server"}:
                 continue
             path = owner / binary.get("path", "src/main.rs")
-            source = changes.get(path, path.read_text())
+            source = changes.get(path, path.read_text(encoding="utf-8"))
             ts = tokens(source)
             main = next((i for i in range(len(ts) - 1) if ts[i].value == "fn" and ts[i + 1].value == "main"), None)
             if main is None:
@@ -399,13 +399,13 @@ def prepare(workspace: Path, *, check: bool = False) -> dict:
         raise ValueError("Expected both release executable entry points")
     inherited = set()
     for owner in set(owners.values()) | {workspace / "build-info"}:
-        package = tomllib.loads((owner / "Cargo.toml").read_text()).get("package", {})
+        package = tomllib.loads((owner / "Cargo.toml").read_text(encoding="utf-8")).get("package", {})
         if package.get("version") == {"workspace": True}:
             inherited.add(package["name"])
     names = set()
     for owner in packages:
         path = owner / "Cargo.toml"
-        original = path.read_text()
+        original = path.read_text(encoding="utf-8")
         package = tomllib.loads(original)
         names.add(package["package"]["name"])
         if "codex-build-info" not in package.get("dependencies", {}):
@@ -413,7 +413,7 @@ def prepare(workspace: Path, *, check: bool = False) -> dict:
                 raise ValueError(f"Missing dependency section: {path}")
             changes[path] = original.replace("[dependencies]\n", "[dependencies]\ncodex-build-info = { workspace = true }\n", 1)
     path = workspace / "Cargo.lock"
-    original = path.read_text()
+    original = path.read_text(encoding="utf-8")
     blocks = original.split("[[package]]")
     old_versions = {}
     for index in range(1, len(blocks)):
@@ -436,7 +436,7 @@ def prepare(workspace: Path, *, check: bool = False) -> dict:
     report = {"files": sorted(str(path.relative_to(workspace)) for path in changes), "packages": sorted(names)}
     if not check:
         for path, source in changes.items():
-            path.write_text(source)
+            path.write_text(source, encoding="utf-8")
     return report
 
 
@@ -449,5 +449,5 @@ if __name__ == "__main__":
     report = prepare(args.workspace, check=args.check)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, indent=2) + "\n")
+        args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"{'Would adapt' if args.check else 'Adapted'} {len(report['files'])} files in {len(report['packages'])} packages; internal packages normalized to 0.0.0")

@@ -408,6 +408,52 @@ actionlint -oneline .github/workflows/rust-release.yml
 git diff --check
 ```
 
+## Windows source-preparation encoding failure: run 42972181582
+
+Investigated and fixed on 2026-11-11 against `4d9b0c0230` and
+[Windows job 130363206427](https://github.com/ayanamist/codex/actions/runs/42972181582/job/130363206427).
+Scope: text I/O in `prepare_fork_sources.py`. Keywords: Windows, CP1252,
+UTF-8, UnicodeDecodeError, CRLF, source preparation.
+
+The Windows job failed in `Adapt application version reads in the build
+checkout`, before Rust compilation. Python 3.12.10 used CP1252 for the
+adapter's implicit `Path.read_text()` encoding. The traceback reports undefined
+byte `0x81` at offset 93704. The repository's
+`app-server/src/config_manager_service_tests.rs` reproduces that exact offset
+after its LF input is converted to Windows CRLF; its UTF-8/LF offset is 91046.
+The earlier Linux checks did not exercise this Windows default encoding.
+
+All adapter reads and writes now explicitly specify `encoding="utf-8"`,
+including Rust files, Cargo manifests/lockfile, and the JSON report. The change
+does not depend on a global Python UTF-8 mode setting. The regression test
+forces omitted encodings to CP1252 and includes an undefined `0x81` UTF-8
+sequence, exercising both LF and CRLF inputs. It failed at the same adapter
+read before the fix and passes afterward, including the UTF-8 output round trip.
+
+The CI entry point also starts the adapter with `python -X utf8`, so the entire
+interpreter uses UTF-8 defaults for text I/O. Python's UTF-8 mode is selected at
+interpreter startup; setting `PYTHONUTF8` inside an already running script would
+not switch that process. Explicit file encodings remain useful when `prepare`
+is imported into a caller that did not enable the mode. A `coding: utf-8`
+source header only declares how to decode the Python source file and would
+not change the encoding used to open Rust/TOML files. See
+[Python UTF-8 mode](https://docs.python.org/3.12/library/os.html#python-utf-8-mode)
+and [text encoding](https://docs.python.org/3.12/library/io.html#text-encoding).
+
+Remote verification passed 41 adapter/fork-release tests. A full-workspace
+probe prepared two disposable copies with native UTF-8 and forced legacy
+defaults; their conversion reports and all 161 generated files across 29
+packages were identical byte for byte. Git whitespace checks passed. This is
+a Linux-hosted encoding simulation; a native Windows Actions rerun has not
+validated the fix yet. The original run checks out its recorded commit, so
+rerunning its failed job alone cannot pick up an uncommitted/new-commit fix.
+
+```sh
+python3 .cache/remote-dev/remote-dev.py exec -- python3 -m unittest discover -s .github/scripts -p 'test_*fork*.py'
+gh api repos/ayanamist/codex/actions/jobs/130363206427/logs
+git diff --check
+```
+
 ## Upstream integration: rust-v0.167.1
 
 Integrated on 2026-11-11 from fork `aeae161db7` using the exact annotated

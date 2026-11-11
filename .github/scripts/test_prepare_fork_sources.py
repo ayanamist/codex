@@ -3,11 +3,42 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import prepare_fork_sources as prep
 
 
 class ForkSourceTests(unittest.TestCase):
+    def test_prepare_uses_utf8_under_windows_legacy_default_encoding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.workspace(root)
+            source = root / "library/src/multilingual.rs"
+            original = '// こんにちは café\npub fn version() -> &\'static str { env!("CARGO_PKG_VERSION") }\n'
+            source.write_text(original, encoding="utf-8")
+            read_text, write_text = Path.read_text, Path.write_text
+
+            def windows_read_text(path, encoding=None, errors=None, **kwargs):
+                return read_text(path, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+            def windows_write_text(path, data, encoding=None, errors=None, **kwargs):
+                return write_text(path, data, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+            # Match Windows Python 3.12's legacy locale, independently of the
+            # Linux host's UTF-8 mode. Exercise both LF and Windows CRLF inputs.
+            for newline in ["\n", "\r\n"]:
+                with self.subTest(newline=repr(newline)):
+                    source.write_bytes(original.replace("\n", newline).encode("utf-8"))
+                    with patch.object(Path, "read_text", windows_read_text), patch.object(Path, "write_text", windows_write_text):
+                        with self.assertRaises(UnicodeDecodeError):
+                            source.read_text()
+                        report = prep.prepare(root)
+                    self.assertIn("library/src/multilingual.rs", report["files"])
+                    self.assertEqual(
+                        source.read_text(encoding="utf-8"),
+                        original.replace('env!("CARGO_PKG_VERSION")', prep.VERSION),
+                    )
+
     def workspace(self, root):
         (root / "Cargo.toml").write_text(
             '[workspace]\nmembers=["cli", "exec-server-cli", "library", "build-info"]\n'
