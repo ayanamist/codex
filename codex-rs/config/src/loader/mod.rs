@@ -6,6 +6,8 @@ mod macos;
 mod managed_requirements;
 mod project_discovery;
 #[cfg(test)]
+mod project_mcp_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -61,6 +63,7 @@ use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
 use dunce::canonicalize as normalize_path;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 #[cfg(windows)]
@@ -1773,6 +1776,7 @@ struct DiscoveredProjectLayer {
     disabled_reason: Option<String>,
     hooks_config_folder_override: Option<AbsolutePathBuf>,
     load_root_checkout_hooks: bool,
+    project_mcp_names: BTreeSet<String>,
 }
 
 struct DiscoveredProjectLayers {
@@ -1818,12 +1822,15 @@ async fn load_project_layers(
         } else {
             config
         };
-        layers.push(project_layer_entry(
-            &layer.dot_codex_folder,
-            config,
-            layer.disabled_reason,
-            layer.hooks_config_folder_override,
-        ));
+        layers.push(
+            project_layer_entry(
+                &layer.dot_codex_folder,
+                config,
+                layer.disabled_reason,
+                layer.hooks_config_folder_override,
+            )
+            .with_project_mcp_names(layer.project_mcp_names),
+        );
     }
 
     Ok(LoadedProjectLayers {
@@ -1863,14 +1870,11 @@ async fn discover_project_layers(
     for dir in dirs {
         let dot_codex_abs = dir.join(".codex");
         let dot_codex_uri = PathUri::from_abs_path(&dot_codex_abs);
-        if !fs
+        let dot_codex_exists = fs
             .get_metadata(&dot_codex_uri, Default::default(), /*sandbox*/ None)
             .await
             .map(|metadata| metadata.is_directory)
-            .unwrap_or(false)
-        {
-            continue;
-        }
+            .unwrap_or(false);
 
         let decision = trust_context.decision_for_dir(&dir);
         let disabled_reason = trust_context.disabled_reason_for_decision(&decision);
@@ -1879,6 +1883,40 @@ async fn discover_project_layers(
             normalize_path(dot_codex_abs.as_path()).unwrap_or_else(|_| dot_codex_abs.to_path_buf());
         if dot_codex_abs == codex_home_abs || dot_codex_normalized == codex_home_normalized {
             continue;
+        }
+        let mcp_file = dir.join(crate::project_mcp::FILE_NAME);
+        let mcp_contents = fs
+            .read_file_text(
+                &PathUri::from_abs_path(&mcp_file),
+                Default::default(),
+                /*sandbox*/ None,
+            )
+            .await;
+        let has_mcp =
+            !matches!(&mcp_contents, Err(error) if error.kind() == io::ErrorKind::NotFound);
+        if !dot_codex_exists && !has_mcp {
+            continue;
+        }
+        let mut mcp_config = TomlValue::Table(Default::default());
+        let mut project_mcp_names = BTreeSet::new();
+        if disabled_reason.is_none() {
+            match mcp_contents {
+                Ok(contents) => {
+                    let parsed =
+                        crate::project_mcp::ProjectMcpConfig::parse(&contents, dir.as_path());
+                    mcp_config = parsed.config;
+                    project_mcp_names = parsed.names;
+                    startup_warnings.extend(parsed.warnings);
+                }
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    startup_warnings.push(format!(
+                        "{}: could not read project MCP configuration ({:?})",
+                        mcp_file.display(),
+                        error.kind()
+                    ));
+                }
+                Err(_) => {}
+            }
         }
         let config_file = dot_codex_abs.join(CONFIG_TOML_FILE);
         let config_file_uri = PathUri::from_abs_path(&config_file);
@@ -1905,6 +1943,7 @@ async fn discover_project_layers(
                             disabled_reason,
                             hooks_config_folder_override,
                             load_root_checkout_hooks: false,
+                            project_mcp_names: BTreeSet::new(),
                         });
                         continue;
                     }
@@ -1918,6 +1957,13 @@ async fn discover_project_layers(
                         dot_codex_abs.as_path(),
                     )?;
                 }
+                // Complete native registrations replace JSON; control-only native
+                // tables can override flags without repeating the transport.
+                let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
+                let mut combined = TomlValue::Table(Default::default());
+                mcp_merge.merge(&mut combined, &mcp_config, &project_mcp_names);
+                mcp_merge.merge(&mut combined, &config, &BTreeSet::new());
+                config = combined;
                 let ignored_project_config_keys = sanitize_project_config(
                     &mut config,
                     trust_context.credential_broker,
@@ -1935,6 +1981,7 @@ async fn discover_project_layers(
                     disabled_reason,
                     hooks_config_folder_override,
                     load_root_checkout_hooks: true,
+                    project_mcp_names,
                 });
             }
             Err(err) => {
@@ -1944,10 +1991,11 @@ async fn discover_project_layers(
                     // that are significant in the overall ConfigLayerStack.
                     layers.push(DiscoveredProjectLayer {
                         dot_codex_folder: dot_codex_abs,
-                        config: TomlValue::Table(toml::map::Map::new()),
+                        config: mcp_config,
                         disabled_reason,
                         hooks_config_folder_override,
                         load_root_checkout_hooks: true,
+                        project_mcp_names,
                     });
                 } else {
                     let config_file_display = config_file.as_path().display();

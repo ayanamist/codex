@@ -186,6 +186,19 @@ pub(super) async fn load_local_config_layers_with_overrides(
         /*strict_config*/ false,
     )
     .await?;
+    let mcp_names = project_layers
+        .layers
+        .iter()
+        .map(|layer| {
+            (
+                layer.dot_codex_folder.clone(),
+                layer.project_mcp_names.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for warning in &project_layers.startup_warnings {
+        tracing::warn!("{warning}");
+    }
 
     let mut config_layers = vec![
         LocalTomlLayer {
@@ -205,6 +218,34 @@ pub(super) async fn load_local_config_layers_with_overrides(
     append_project_layers(fs, &mut config_layers, project_layers.layers).await?;
 
     append_legacy_config_layers(&mut config_layers, loaded_managed, &codex_home)?;
+
+    // The environment-config protocol transports plain TOML layers. Remove
+    // displaced registrations from earlier projections so remote consumers
+    // cannot recursively merge credentials from an overridden JSON endpoint.
+    let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
+    let mut merged = TomlValue::Table(Default::default());
+    for index in 0..config_layers.len() {
+        let layer = &config_layers[index];
+        let empty = Default::default();
+        let names = match &layer.source {
+            ConfigLayerSource::Project { dot_codex_folder } => {
+                mcp_names.get(dot_codex_folder).unwrap_or(&empty)
+            }
+            _ => &empty,
+        };
+        let replaced = mcp_merge.merge(&mut merged, &layer.toml, names);
+        for lower in &mut config_layers[..index] {
+            if let Some(servers) = lower
+                .toml
+                .get_mut("mcp_servers")
+                .and_then(TomlValue::as_table_mut)
+            {
+                for name in &replaced {
+                    servers.remove(name);
+                }
+            }
+        }
+    }
 
     // Local config reads preserve raw executor paths. Only the profile ancestry and
     // presence of MITM rules are needed here, before schema-specific path resolution.

@@ -15,6 +15,7 @@ use crate::ProfileV2Name;
 use crate::shell_environment_policy::validate_shell_environment_policy_filter_config;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -120,6 +121,8 @@ pub struct ConfigLayerEntry {
     pub disabled_reason: Option<String>,
     raw_toml: Option<RawTomlLayer>,
     hooks_config_folder_override: Option<AbsolutePathBuf>,
+    /// Registrations originating in project JSON replace lower entries atomically.
+    project_mcp_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +141,7 @@ impl ConfigLayerEntry {
             disabled_reason: None,
             raw_toml: None,
             hooks_config_folder_override: None,
+            project_mcp_names: BTreeSet::new(),
         }
     }
 
@@ -158,6 +162,7 @@ impl ConfigLayerEntry {
                 base_dir: raw_toml_base_dir,
             }),
             hooks_config_folder_override: None,
+            project_mcp_names: BTreeSet::new(),
         }
     }
 
@@ -174,11 +179,17 @@ impl ConfigLayerEntry {
             disabled_reason: Some(disabled_reason.into()),
             raw_toml: None,
             hooks_config_folder_override: None,
+            project_mcp_names: BTreeSet::new(),
         }
     }
 
     pub fn is_disabled(&self) -> bool {
         self.disabled_reason.is_some()
+    }
+
+    pub(crate) fn with_project_mcp_names(mut self, names: BTreeSet<String>) -> Self {
+        self.project_mcp_names = names;
+        self
     }
 
     pub fn raw_toml(&self) -> Option<&str> {
@@ -636,8 +647,9 @@ impl ConfigLayerStack {
     /// Selection and other requirements are applied when constructing the final config.
     pub fn effective_config(&self) -> TomlValue {
         let mut merged = TomlValue::Table(toml::map::Map::new());
+        let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
         for layer in self.layers_low_to_high() {
-            merge_toml_values(&mut merged, &layer.config);
+            mcp_merge.merge(&mut merged, &layer.config, &layer.project_mcp_names);
         }
         if let Some(requirements) = &self.model_provider_requirements {
             crate::model_provider_requirements::apply(&mut merged, requirements);
@@ -666,9 +678,15 @@ impl ConfigLayerStack {
         let mut origins = HashMap::new();
         let mut path = Vec::new();
         let mut provider_paths = vec!["features.network_proxy.credentials.".to_string()];
+        let mut merged = TomlValue::Table(Default::default());
+        let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
 
         for layer in self.layers_low_to_high() {
             let config = normalize_key_aliases(&layer.config);
+            for name in mcp_merge.merge(&mut merged, &config, &layer.project_mcp_names) {
+                let prefix = format!("mcp_servers.{name}.");
+                origins.retain(|path: &String, _| !path.starts_with(&prefix));
+            }
             if let Some(profiles) = config.get("profiles").and_then(TomlValue::as_table) {
                 provider_paths.extend(
                     profiles

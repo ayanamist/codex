@@ -60,6 +60,71 @@ fn list_shows_empty_state() -> Result<()> {
 }
 
 #[test]
+fn project_mcp_json_list_and_get_share_discovery_and_warn_for_sse() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let project = TempDir::new()?;
+    let project_path = project.path().canonicalize()?;
+    let child = project_path.join("src");
+    std::fs::create_dir_all(&child)?;
+    std::fs::write(project_path.join(".project-root"), "")?;
+    let project_key = toml::Value::String(project_path.display().to_string());
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "project_root_markers=['.project-root']\n[projects.{project_key}]\ntrust_level='trusted'\n"
+        ),
+    )?;
+    std::fs::write(
+        project_path.join(".mcp.json"),
+        r#"{
+        // Shared with another coding agent.
+        "mcpServers": {
+            "worker": {"command":"node", "args":["./server.js",], "env":{"MODE":"${CODEX_PROJECT_MCP_MODE}"}},
+            "legacy": {"type":"sse", "url":"https://example.test/sse?secret=fixture-private"}
+        }
+    }"#,
+    )?;
+
+    let mut list = codex_command(codex_home.path())?;
+    let output = list
+        .current_dir(&child)
+        .env("CODEX_PROJECT_MCP_MODE", "fixture")
+        .args(["mcp", "list", "--json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let entries: JsonValue = serde_json::from_slice(&output.stdout)?;
+    let worker = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "worker")
+        .unwrap();
+    assert_eq!(worker["transport"]["command"], "node");
+    assert_eq!(worker["transport"]["cwd"], project_path.to_str().unwrap());
+    let warnings = String::from_utf8(output.stderr)?;
+    assert!(warnings.contains("Warning:"));
+    assert!(warnings.contains("SSE"));
+    assert!(!warnings.contains("fixture-private"));
+
+    let mut get = codex_command(codex_home.path())?;
+    let output = get
+        .current_dir(&child)
+        .env("CODEX_PROJECT_MCP_MODE", "fixture")
+        .args(["mcp", "get", "worker", "--json"])
+        .output()?;
+    assert!(output.status.success());
+    let entry: JsonValue = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(entry["transport"], worker["transport"]);
+    assert_eq!(entry["transport"]["env"]["MODE"], "fixture");
+    assert!(String::from_utf8(output.stderr)?.contains("SSE"));
+    Ok(())
+}
+
+#[test]
 fn api_key_auth_exposes_api_curated_plugin_mcp_servers() -> Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(

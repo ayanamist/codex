@@ -1,5 +1,18 @@
 # Fork notes
 
+- [Project MCP configuration](project-mcp-configuration.md): trusted-project
+  `.mcp.json` compatibility, JSONC, variables, headers, nested discovery,
+  atomic server replacement and native TOML overrides; plugin JSON loading,
+  external-agent import, global CLI writes, and comparison
+  with other coding agents' project MCP configuration and compatibility paths;
+  upstream PR search, unmerged cwd `mcp.json` patch, TOML-only issue closure,
+  pinned Pi adapter/VS Code implementation evidence, and the confirmed
+  compatibility target (legacy SSE warns and is skipped).
+  Keywords: MCP, `.mcp.json`, `mcpServers`, `mcp_servers`, project, trust,
+  migration, plugins, `codex mcp add`, Claude Code, Copilot, Cursor, Pi,
+  Gemini CLI, OpenCode, JSONC, headers, environment variables, SSE,
+  openai/codex#12718, openai/codex#13056.
+  Implemented: 2026-11-11, `0.167.1`.
 - [Skill invocation policy compatibility](skill-invocation-policy.md): fall back
   to `SKILL.md` frontmatter when `agents/openai.yaml` leaves invocation unset;
   preserve explicit Codex policy and product restrictions across host and

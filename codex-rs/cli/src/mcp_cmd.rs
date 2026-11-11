@@ -688,6 +688,9 @@ async fn run_logout(config: &Config, logout_args: LogoutArgs) -> Result<()> {
 }
 
 async fn run_list(config: &Config, list_args: ListArgs) -> Result<()> {
+    for warning in &config.startup_warnings {
+        eprintln!("Warning: {warning}");
+    }
     let mcp_manager = load_mcp_manager(config).await?;
     let auth_manager =
         AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await?;
@@ -956,6 +959,9 @@ async fn run_list(config: &Config, list_args: ListArgs) -> Result<()> {
 }
 
 async fn run_get(config: &Config, get_args: GetArgs) -> Result<()> {
+    for warning in &config.startup_warnings {
+        eprintln!("Warning: {warning}");
+    }
     let mcp_manager = load_mcp_manager(config).await?;
     let mcp_servers = mcp_manager.configured_servers(config).await;
 
