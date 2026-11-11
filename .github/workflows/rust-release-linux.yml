@@ -68,7 +68,7 @@ jobs:
       run:
         shell: bash
     env:
-      CARGO_BUILD_JOBS: "3"
+      CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       SCCACHE_GHA_ENABLED: "true"
@@ -76,6 +76,17 @@ jobs:
       # Keep native compiler inputs visible when the dependency cache is keyed.
       TARGET: x86_64-unknown-linux-gnu
     steps:
+      # Exit 143 on this job is a SIGTERM from resource exhaustion; reclaim disk and add swap up front.
+      - name: Free disk space and add swap
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -m
+          df -h
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.resolve.outputs.fork_commit }}
@@ -137,6 +148,12 @@ jobs:
           cargo build --locked --release --timings \
             -p codex-cli -p codex-exec-server-cli \
             --bin codex --bin codex-exec-server --target "$TARGET"
+      - name: Report resource usage and OOM kills
+        if: always() && steps.compile.outcome != 'skipped'
+        run: |
+          free -m
+          df -h
+          sudo dmesg 2>/dev/null | grep -i -E 'out of memory|oom|killed process' | tail -n 20 || true
       - name: Record compiler cache statistics
         if: always() && steps.sccache.outcome == 'success' && steps.compile.outcome != 'skipped'
         working-directory: codex-rs
