@@ -6,16 +6,34 @@ Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc
 GNU, Windows, MAX_PATH, Cargo, cache, timings, commit hash, SemVer suffix,
 paths-ignore.
 
-Only [`rust-release.yml`](rust-release.yml) remains. Pushing to `fork-release`
+Updated on 2026-11-11: each platform has its own workflow,
+[`rust-release-linux.yml`](rust-release-linux.yml),
+[`rust-release-macos.yml`](rust-release-macos.yml), and
+[`rust-release-windows.yml`](rust-release-windows.yml). Each is self-contained
+(resolve, build, upload) and contains only its platform's steps; there is no shared
+workflow, so a change to common steps must be applied to all three. A failing
+platform no longer cancels or blocks the others, and each can be re-run alone
+so successful platforms still save their caches. Each build workflow serializes
+per target. All three resolve the same deterministic tag, and a tag created first
+by a sibling is accepted. The first platform to finish creates the release as
+non-latest (its notes never change); every platform then uploads its own package
+with `--clobber` plus the installers, and rewrites `codex-package_SHA256SUMS` from
+the release's asset digests until the archive set is stable. Whichever platform
+finds all three packages present marks the release `latest`, after the ancestry
+check below; until then `releases/latest` still serves the previous release.
+Re-running a failed platform fills in its package and completes the promotion.
+
+Pushing to `fork-release`
 automatically selects a tag such as `rust-v0.167.0-fork.5d0840ed`, builds the
 fork's `codex` entrypoint for Linux GNU/glibc x64, macOS ARM64, and Windows x64,
 and publishes a stable release. Manual tag creation is unnecessary. A manual
-`workflow_dispatch` on `fork-release` provides a recovery entry point.
+`workflow_dispatch` on `fork-release` of any platform workflow provides a recovery
+entry point.
 
 The suffix contains the first eight source commit characters, with the full SHA
 retained in package metadata and linked release notes. A retry reuses the tag already
-reserved for that commit. Published commits and obsolete queued push commits
-are skipped. A later documentation-only push does not supersede a pending code
+reserved for that commit, including after its release exists. Obsolete queued push
+commits are skipped. A later documentation-only push does not supersede a pending code
 release. The workflow serializes allocation through publication and passes
 the selected tag to its later jobs directly, using the built-in `GITHUB_TOKEN`.
 
@@ -103,12 +121,11 @@ remain supported. GitHub Release flags determine the stable channel. See
 procedure, metadata contract, source evidence, and verification commands.
 
 The release publishes three `codex-package-<target>.tar.gz` files,
-`codex-package_SHA256SUMS`, the fork's `install.sh` and `install.ps1`, and
-`config-schema.json`. A first release can become `latest`; an older upstream
+`codex-package_SHA256SUMS`, and the fork's `install.sh` and `install.ps1`. A
+release becomes `latest` only once all three packages exist; an older upstream
 base cannot replace a newer `latest`, and GitHub commit comparison prevents a
 behind or diverged source commit from replacing it. Hashes are never ordered
-lexically. Published releases cannot be
-overwritten; failed drafts can be retried.
+lexically. Re-running a platform overwrites its own assets.
 
 The new macOS CLI and executor use ad hoc signatures; their Windows equivalents
 are not Authenticode signed. Reused upstream binary signatures are preserved. No
@@ -120,7 +137,7 @@ resource checks are release integrity checks.
 Local validation:
 
 ```sh
-actionlint -oneline .github/workflows/rust-release.yml
+actionlint -oneline .github/workflows/rust-release*.yml
 python3 -m unittest discover -s .github/scripts -p test_fork_release.py
 python3 -m unittest discover -s .github/scripts -p test_prepare_rusty_v8_source.py
 python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py

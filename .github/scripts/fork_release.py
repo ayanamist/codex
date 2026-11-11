@@ -128,15 +128,17 @@ def automatic_tag(base: str, commit: str) -> tuple[str, bool]:
     if reference is not None:
         if tag_commit(repository, reference) != commit:
             raise ValueError("Fork tag collision: the abbreviated hash points to another commit")
-        existing = github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True)
-        if existing is not None and not existing["draft"]:
-            print(f"Commit already published as {tag}; skipping publication")
-            return tag, False
         print(f"Resuming release {tag} for the same commit")
         return tag, True
-    github_json(f"repos/{repository}/git/refs", data={
-        "ref": f"refs/tags/{tag}", "sha": commit,
-    })
+    try:
+        github_json(f"repos/{repository}/git/refs", data={
+            "ref": f"refs/tags/{tag}", "sha": commit,
+        })
+    except RuntimeError:
+        # Per-platform workflows resolve concurrently; accept a tag reserved first by a sibling.
+        reference = github_json(f"repos/{repository}/git/ref/tags/{tag}", missing_ok=True)
+        if reference is None or tag_commit(repository, reference) != commit:
+            raise
     print(f"Allocated {tag} for {commit}")
     return tag, True
 
@@ -360,23 +362,66 @@ def assemble(package: Path, binary: Path, exec_server: Path, output: Path) -> Pa
     return archive_path
 
 
+def release_checksums(repository: str, tag: str, local: dict[str, str]) -> dict[str, str]:
+    assets = github_json(f"repos/{repository}/releases/tags/{tag}")["assets"]
+    sums = {}
+    for target in TARGETS:
+        name = f"codex-package-{target}.tar.gz"
+        asset = next((item for item in assets if item["name"] == name), None)
+        if asset is None:
+            continue
+        value = local.get(name) or (asset.get("digest") or "").removeprefix("sha256:")
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"No SHA-256 digest is available for {name}")
+        sums[name] = value
+    return sums
+
+
 def publish(tag: str, directory: Path) -> None:
+    """Add this platform's package to the release, creating the release on first use."""
     _, version = parse_tag(tag)
-    archives = [directory / f"codex-package-{target}.tar.gz" for target in TARGETS]
-    if any(not path.is_file() for path in archives):
-        raise ValueError("All three platform packages are required before publication")
+    archives = [path for target in TARGETS if (path := directory / f"codex-package-{target}.tar.gz").is_file()]
+    if not archives:
+        raise ValueError("No platform package to publish")
     commit = run("git", "rev-parse", "HEAD")
     verify_tag_commit(tag, commit)
     repository = os.environ["GITHUB_REPOSITORY"]
-    (directory / "codex-package_SHA256SUMS").write_text(
-        "".join(f"{digest(path)}  {path.name}\n" for path in archives), encoding="utf-8",
-    )
     for source in ["install.sh", "install.ps1"]:
         shutil.copyfile(ROOT / "scripts/install" / source, directory / source)
-    shutil.copyfile(ROOT / "codex-rs/core/config.schema.json", directory / "config-schema.json")
     existing = github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True)
-    if existing is not None and not existing["draft"]:
-        raise ValueError("Refusing to replace an already published fork release; publish a new commit")
+    if existing is None or existing["draft"]:
+        notes = directory / "release-notes.md"
+        write_release_notes(notes, tag, version, commit, repository)
+        if existing is None:
+            try:
+                run("gh", "release", "create", tag, "--repo", repository, "--verify-tag", "--latest=false", "--title", version, "--notes-file", str(notes))
+            except subprocess.CalledProcessError:
+                # A sibling platform workflow may have created the release first.
+                if github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True) is None:
+                    raise
+        else:
+            run("gh", "release", "edit", tag, "--repo", repository, "--draft=false", "--prerelease=false", "--latest=false")
+    fixed = [directory / name for name in ["install.sh", "install.ps1"]]
+    run("gh", "release", "upload", tag, "--repo", repository, "--clobber", *(str(path) for path in archives + fixed))
+    # Sibling uploads may race with this one; rewrite the checksums until the archive set is stable.
+    local = {path.name: digest(path) for path in archives}
+    published = None
+    for _ in range(5):
+        sums = release_checksums(repository, tag, local)
+        if sums.keys() == published:
+            break
+        checksums = directory / "codex-package_SHA256SUMS"
+        checksums.write_text("".join(f"{value}  {name}\n" for name, value in sums.items()), encoding="utf-8")
+        run("gh", "release", "upload", tag, "--repo", repository, "--clobber", str(checksums))
+        published = sums.keys()
+    else:
+        raise RuntimeError("Release assets kept changing while writing checksums")
+    # Only a complete release may become latest; this edit is idempotent across siblings.
+    if len(sums) == len(TARGETS) and latest_after_publication(repository, tag, version, commit):
+        run("gh", "release", "edit", tag, "--repo", repository, "--latest=true")
+
+
+def latest_after_publication(repository: str, tag: str, version: str, commit: str) -> bool:
     latest = github_json(f"repos/{repository}/releases/latest", missing_ok=True)
     make_latest = latest is None or should_make_latest(version, latest)
     if latest is not None and make_latest and latest["tag_name"] != tag:
@@ -384,7 +429,10 @@ def publish(tag: str, directory: Path) -> None:
         if comparison["status"] not in {"ahead", "identical", "behind", "diverged"}:
             raise ValueError("Cannot determine release commit ancestry")
         make_latest = comparison["status"] in {"ahead", "identical"}
-    notes = directory / "release-notes.md"
+    return make_latest
+
+
+def write_release_notes(notes: Path, tag: str, version: str, commit: str, repository: str) -> None:
     base, _ = parse_tag(tag)
     notes.write_text(
         f"Fork CLI {version}, based on [{UPSTREAM} rust-v{base}]"
@@ -398,11 +446,6 @@ def publish(tag: str, directory: Path) -> None:
         "The fork executable does not carry OpenAI's signing identity. "
         "macOS builds use an ad hoc signature.\n", encoding="utf-8",
     )
-    if existing is None:
-        run("gh", "release", "create", tag, "--repo", repository, "--verify-tag", "--draft", "--latest=false", "--title", version, "--notes-file", str(notes))
-    assets = archives + [directory / name for name in ["codex-package_SHA256SUMS", "install.sh", "install.ps1", "config-schema.json"]]
-    run("gh", "release", "upload", tag, "--repo", repository, "--clobber", *(str(path) for path in assets))
-    run("gh", "release", "edit", tag, "--repo", repository, "--draft=false", "--prerelease=false", f"--latest={str(make_latest).lower()}")
 
 
 def main() -> None:
