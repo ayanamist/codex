@@ -44,6 +44,21 @@
   V8/ICU git checkout; Linux prebuilt V8 execution was verified.
   Implemented: 2026-11-10. Latest upstream integration: 2026-11-11,
   `rust-v0.167.1`; workspace version conflict and isolated release-test fixture.
+  Compiler-cache diagnosis: 2026-11-11, run `42941045713`; version-only root
+  manifest changes invalidate all three caches, Cargo timing evidence identifies
+  large workspace/bin tasks, and sccache coverage is limited by executable
+  linking and per-release workspace version stamping. Keywords: sccache,
+  ThinLTO, restore key, compiler cache, package identity.
+  Implemented: 2026-11-11, version-independent build-settings fingerprint,
+  pinned sccache and manual benchmark mode without tag allocation/publication;
+  remote library probe confirms internal cache misses after version-only
+  stamping. Upstream main's `0.0.0` differs from the release-tag version.
+  Build-copy adapter implemented: the integration branch retains upstream
+  consumer sources and manifests; a guarded scanner adapts new version reads
+  and normalizes internal identities to `0.0.0` only while building. Executable
+  stamps feed a common runtime interface; a new-stamp probe preserves all
+  49 library cache hits. Keywords: source preparation, tokenizer, upstream
+  merges, `application_version`, `CODEX_RELEASE_VERSION`, executable stamp.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,
   tests, Issue/PR automation, and external publication. Keywords: GitHub Actions,

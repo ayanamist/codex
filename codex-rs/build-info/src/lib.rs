@@ -1,4 +1,4 @@
-//! Resolve the packaged release version, compiled commit, and target of the current runtime.
+//! Resolve the executable's release version, compiled commit, and target.
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -11,6 +11,13 @@ use sha2::Digest;
 use sha2::Sha256;
 
 static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
+static APPLICATION_VERSION: OnceLock<String> = OnceLock::new();
+
+/// The running application's release version, independent of internal Cargo packages.
+/// Executable entry points initialize this before starting any library work.
+pub fn application_version() -> &'static str {
+    APPLICATION_VERSION.get_or_init(|| BuildInfo::get().version().to_string())
+}
 
 /// Compare an authoritative latest release with the installed version.
 /// Fork commit hashes identify builds, so different hashes on the same upstream
@@ -63,11 +70,15 @@ pub fn is_newer_release(latest: &str, current: &str) -> Option<bool> {
 ///
 /// The environment lookup intentionally expands at the macro call site so Git
 /// changes invalidate only final binary actions, not this shared library.
-/// Cargo builds must supply STABLE_GIT_COMMIT in the build environment.
+/// Release builds supply STABLE_GIT_COMMIT and CODEX_RELEASE_VERSION. Neither
+/// input is read while compiling this shared library.
 #[macro_export]
 macro_rules! initialize {
     () => {
-        $crate::BuildInfo::initialize(option_env!("STABLE_GIT_COMMIT").unwrap_or("dev"));
+        $crate::BuildInfo::initialize_release(
+            option_env!("STABLE_GIT_COMMIT").unwrap_or("dev"),
+            option_env!("CODEX_RELEASE_VERSION"),
+        );
     };
 }
 
@@ -94,7 +105,15 @@ impl BuildInfo {
     /// invalidating the shared Rust library graph.
     #[doc(hidden)]
     pub fn initialize(build_commit: &'static str) {
-        let _ = BUILD_INFO.get_or_init(|| Self::resolve(InstallContext::current(), build_commit));
+        Self::initialize_release(build_commit, None);
+    }
+
+    /// Stamp release identity at an executable entry point without rebuilding libraries.
+    #[doc(hidden)]
+    pub fn initialize_release(build_commit: &'static str, release_version: Option<&'static str>) {
+        let _ = BUILD_INFO.get_or_init(|| {
+            Self::resolve_with_version(InstallContext::current(), build_commit, release_version)
+        });
     }
 
     /// Recover structured release information from a persisted version string.
@@ -121,7 +140,8 @@ impl BuildInfo {
         }
     }
 
-    /// Return the parsed package version, or `0.0.0` for a source build.
+    /// Return the compiled release version, falling back to package metadata,
+    /// or `0.0.0` for an unpackaged source build.
     pub fn version(&self) -> &Version {
         &self.version
     }
@@ -153,16 +173,24 @@ impl BuildInfo {
     }
 
     fn resolve(install_context: &InstallContext, build_commit: &'static str) -> Self {
-        if let Some(manifest) = install_context.package_manifest() {
-            return Self {
-                version: manifest.version,
-                build_commit: build_commit.to_owned(),
-                target: Some(env!("CODEX_BUILD_TARGET").to_owned()),
-            };
-        }
+        Self::resolve_with_version(install_context, build_commit, None)
+    }
 
+    fn resolve_with_version(
+        install_context: &InstallContext,
+        build_commit: &'static str,
+        release_version: Option<&str>,
+    ) -> Self {
+        let version = release_version
+            .and_then(|value| Version::parse(value).ok())
+            .or_else(|| {
+                install_context
+                    .package_manifest()
+                    .map(|manifest| manifest.version)
+            })
+            .unwrap_or_else(|| Version::new(0, 0, 0));
         Self {
-            version: Version::new(0, 0, 0),
+            version,
             build_commit: build_commit.to_owned(),
             target: Some(env!("CODEX_BUILD_TARGET").to_owned()),
         }

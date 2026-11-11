@@ -11,6 +11,31 @@ use crate::build_id;
 const BUILD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
 #[test]
+fn compiled_release_version_is_independent_of_cargo_and_package_versions() {
+    let package = tempdir().expect("create package");
+    let executable = package.path().join("bin/codex");
+    fs::create_dir(executable.parent().expect("binary directory")).expect("create bin");
+    fs::write(&executable, b"").expect("create executable");
+    fs::write(
+        package.path().join("codex-package.json"),
+        r#"{"version":"0.167.1"}"#,
+    )
+    .expect("create manifest");
+    let packaged = InstallContext::from_exe(false, Some(&executable), None);
+    let unpackaged = InstallContext::from_exe(false, None, None);
+    for context in [&packaged, &unpackaged] {
+        for version in ["0.167.1-fork.aaaaaaaa", "0.167.1-fork.bbbbbbbb"] {
+            let info = BuildInfo::resolve_with_version(context, BUILD_COMMIT, Some(version));
+            assert_eq!(info.version().to_string(), version);
+            assert_eq!(info.build_commit(), BUILD_COMMIT);
+            assert!(!info.is_source_build());
+            assert_eq!(info.display_version(), format!("v{version}"));
+        }
+    }
+    assert_ne!(env!("CARGO_PKG_VERSION"), "0.167.1-fork.aaaaaaaa");
+}
+
+#[test]
 fn stable_fork_release_ordering() {
     for (latest, current, expected) in [
         ("0.167.0-ayanamist.1", "0.167.0", Some(true)),

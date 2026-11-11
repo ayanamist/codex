@@ -12,6 +12,11 @@ on:
       - '**/*.adoc'
       - '**/*.mmd'
   workflow_dispatch:
+    inputs:
+      verify_compiler_cache:
+        description: "Benchmark compiler caching with two builds; do not allocate a tag or publish a release"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +35,7 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       should_publish: ${{ steps.release.outputs.should_publish }}
+      should_build: ${{ steps.release.outputs.should_build }}
       fork_commit: ${{ steps.release.outputs.fork_commit }}
       upstream_commit: ${{ steps.release.outputs.upstream_commit }}
       version: ${{ steps.release.outputs.version }}
@@ -39,15 +45,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Resolve the upstream release and allocate the fork tag
+      - name: Resolve the upstream release and fork build identity
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/fork_release.py resolve --github-output "$GITHUB_OUTPUT"
+          BENCHMARK_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_compiler_cache }}
+        run: |
+          args=()
+          if [[ "$BENCHMARK_ONLY" == "true" ]]; then args+=(--benchmark-only); fi
+          python3 .github/scripts/fork_release.py resolve --github-output "$GITHUB_OUTPUT" "${args[@]}"
 
   build:
     needs: resolve
-    if: needs.resolve.outputs.should_publish == 'true'
+    if: needs.resolve.outputs.should_build == 'true'
     name: Build codex - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -58,6 +68,8 @@ jobs:
       CARGO_BUILD_JOBS: "3"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_VERSION: fork-release-v1
       # Keep native compiler inputs visible when the dependency cache is keyed.
       LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
       TARGET: ${{ matrix.target }}
@@ -105,19 +117,27 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential binutils pkg-config libcap-dev libssl-dev
       - name: Prepare pinned V8 Rust sources without native submodules
         run: python .github/scripts/prepare_rusty_v8_source.py
-      # Restore before prepare stamps Cargo.toml/Cargo.lock with the release
-      # identity. Cache dependencies only; fork crates carry version/commit data.
+      - name: Adapt application version reads in the build checkout
+        run: |
+          python .github/scripts/prepare_fork_sources.py \
+            --report build-metrics/fork-source-preparation.json
+      - name: Fingerprint release build settings without the package version
+        id: build_settings
+        run: python .github/scripts/fork_release.py cache-key --github-output "$GITHUB_OUTPUT"
+      # Internal package identities stay 0.0.0. sccache retains workspace library
+      # compilations; the Cargo artifact cache keeps third-party dependencies.
       - name: Cache Cargo dependencies and compiled third-party crates
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: fork-release-v2
-          # Include the virtual workspace's release profile and patch settings.
-          key: ${{ matrix.runner }}-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.toml') }}
+          # Keep profiles/patches isolated while allowing fallback across version
+          # and dependency updates. rust-cache fingerprints dependencies itself.
+          key: ${{ matrix.runner }}-${{ matrix.target }}-${{ steps.build_settings.outputs.build_settings_hash }}
           env-vars: LIBSQLITE3_FLAGS
           workspaces: codex-rs -> target
           cache-bin: "false"
           cache-workspace-crates: "false"
-      - name: Download and verify the upstream package; stamp the fork version
+      - name: Download and verify the upstream package; export executable release identity
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
@@ -127,18 +147,66 @@ jobs:
             --tag "$RELEASE_TAG" --upstream-commit "$UPSTREAM_COMMIT" \
             --target "$TARGET" --package-dir "$GITHUB_WORKSPACE/upstream-package" \
             --env-file "$GITHUB_ENV"
+      - name: Set up the pinned Rust compiler cache
+        id: sccache
+        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.19.0"
       - name: Build the Codex CLI and standalone executor
+        id: compile
         working-directory: codex-rs
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
+          sccache --zero-stats
           cargo build --locked --release --timings \
             -p codex-cli -p codex-exec-server-cli \
             --bin codex --bin codex-exec-server --target "$TARGET"
+      - name: Record compiler cache statistics
+        if: always() && steps.sccache.outcome == 'success' && steps.compile.outcome != 'skipped'
+        working-directory: codex-rs
+        run: |
+          mkdir -p target
+          sccache --show-stats
+          sccache --show-stats --stats-format json > target/sccache-initial.json
       - name: Upload Cargo build timings
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: rust-build-timings-${{ matrix.target }}
-          path: codex-rs/target/cargo-timings/*.html
+          path: |
+            codex-rs/target/cargo-timings/*.html
+            codex-rs/target/sccache-initial.json
+            build-metrics/fork-source-preparation.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Measure compiler cache reuse without Cargo build artifacts
+        id: warm_compile
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_compiler_cache
+        working-directory: codex-rs
+        env:
+          RUSTC_WRAPPER: sccache
+        run: |
+          cargo clean --release --target "$TARGET"
+          sccache --zero-stats
+          cargo build --locked --release --timings \
+            -p codex-cli -p codex-exec-server-cli \
+            --bin codex --bin codex-exec-server --target "$TARGET"
+      - name: Record warm compiler cache statistics
+        if: always() && steps.warm_compile.outcome != 'skipped' && steps.sccache.outcome == 'success'
+        working-directory: codex-rs
+        run: |
+          mkdir -p target
+          sccache --show-stats
+          sccache --show-stats --stats-format json > target/sccache-warm.json
+      - name: Upload warm build timings and compiler cache statistics
+        if: always() && steps.warm_compile.outcome != 'skipped'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: rust-warm-build-timings-${{ matrix.target }}
+          path: |
+            codex-rs/target/cargo-timings/*.html
+            codex-rs/target/sccache-warm.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Strip and sign the fork executables
@@ -184,6 +252,7 @@ jobs:
 
   release:
     needs: [resolve, build]
+    if: needs.resolve.outputs.should_publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write

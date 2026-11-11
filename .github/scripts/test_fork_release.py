@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -16,6 +17,35 @@ from releases import is_valid_stable_release_version, should_make_latest, should
 class ForkReleaseTests(unittest.TestCase):
     def reference(self, commit, kind="commit"):
         return {"object": {"type": kind, "sha": commit}}
+
+    def test_build_cache_settings_ignore_release_identity_and_dependency_updates(self):
+        manifest = {
+            "workspace": {
+                "package": {"version": "0.167.0", "edition": "2024"},
+                "resolver": "2",
+                "dependencies": {"serde": "1"},
+            },
+            "profile": {"release": {"lto": "thin", "codegen-units": 4}},
+            "patch": {"crates-io": {"v8": {"git": "https://example.com/v8", "rev": "a" * 40}}},
+        }
+        before = release.build_cache_settings_hash(manifest)
+        manifest["workspace"]["package"]["version"] = "0.167.1-fork.bbbbbbbb"
+        manifest["workspace"]["dependencies"]["serde"] = "2"
+        self.assertEqual(release.build_cache_settings_hash(manifest), before)
+
+        for section, field, value in [
+            ("profile", "release", {"lto": "off", "codegen-units": 4}),
+            ("patch", "crates-io", {"v8": {"git": "https://example.com/v8", "rev": "c" * 40}}),
+            ("workspace", "resolver", "3"),
+            ("workspace", "package", {"version": "0.167.1", "edition": "2027"}),
+        ]:
+            with self.subTest(section=section, field=field):
+                changed = copy.deepcopy(manifest)
+                changed[section][field] = value
+                self.assertNotEqual(release.build_cache_settings_hash(changed), before)
+
+        reordered = dict(reversed(list(manifest.items())))
+        self.assertEqual(release.build_cache_settings_hash(reordered), before)
 
     def test_push_reserves_a_tag_with_eight_commit_characters(self):
         commit = "b" * 40
@@ -124,6 +154,43 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertEqual(values["fork_commit"], commit)
             self.assertEqual(values["upstream_commit"], upstream)
             self.assertEqual(values["should_publish"], "true")
+            self.assertEqual(values["should_build"], "true")
+
+    def test_cache_benchmark_builds_published_commits_without_allocating_a_tag(self):
+        commit, upstream = "b" * 40, "a" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "outputs"
+            (root / "codex-rs").mkdir()
+            (root / "codex-rs/Cargo.toml").write_text('[workspace.package]\nversion = "0.167.0"\n')
+            (root / "codex-rs/rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.95.0"\n')
+            with patch("fork_release.ROOT", root), patch("fork_release.github_json", return_value={
+                "tag_name": "rust-v0.167.0", "draft": False, "prerelease": False,
+            }) as api, patch("fork_release.run", side_effect=["", upstream, "", commit]), patch(
+                "fork_release.automatic_tag"
+            ) as allocate:
+                release.resolve(None, output, benchmark_only=True)
+            allocate.assert_not_called()
+            api.assert_called_once_with("repos/openai/codex/releases/tags/rust-v0.167.0")
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["tag"], "rust-v0.167.0-fork.bbbbbbbb")
+            self.assertEqual(values["should_build"], "true")
+            self.assertEqual(values["should_publish"], "false")
+
+    def test_resolve_requires_a_stable_upstream_base_before_build_normalization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "codex-rs").mkdir()
+            manifest = root / "codex-rs/Cargo.toml"
+            for base in ["0.0.0", "0.167.0-alpha.1", "0.167.0+build", "invalid"]:
+                with self.subTest(base=base), patch("fork_release.ROOT", root), patch("fork_release.github_json") as api:
+                    manifest.write_text(f'[workspace.package]\nversion = "{base}"\n')
+                    with self.assertRaisesRegex(ValueError, "upstream release checkout"):
+                        release.resolve(None, root / "output")
+                    api.assert_not_called()
+            manifest.write_text('[workspace.package]\nversion = "0.167.0"\n')
+            with patch("fork_release.ROOT", root), self.assertRaisesRegex(ValueError, "unchanged upstream"):
+                release.resolve("rust-v0.168.0-fork.bbbbbbbb", root / "output")
 
     def test_tag_creation_sends_a_structured_json_body(self):
         import subprocess
@@ -146,26 +213,6 @@ class ForkReleaseTests(unittest.TestCase):
         self.assertFalse(should_make_latest("0.167.0-fork.bbbbbbbb", {
             "tag_name": "rust-v0.168.0-fork.aaaaaaaa", "draft": False, "prerelease": False,
         }))
-
-    def test_version_stamp_preserves_registry_packages_and_lock_references(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            crate = root / "codex-rs/cli"
-            crate.mkdir(parents=True)
-            (crate / "Cargo.toml").write_text('[package]\nname = "codex-cli"\nversion.workspace = true\n')
-            implicit = root / "codex-rs/implicit"
-            implicit.mkdir()
-            (implicit / "Cargo.toml").write_text('[package]\nname = "codex-implicit"\nversion.workspace = true\n')
-            (root / "codex-rs/Cargo.toml").write_text(
-                '[workspace]\nmembers = ["cli"]\n[workspace.package]\nversion = "0.167.0"\n'
-            )
-            lock = root / "codex-rs/Cargo.lock"
-            lock.write_text('version = 4\n[[package]]\nname = "codex-cli"\nversion = "0.0.0"\ndependencies = ["codex-implicit 0.0.0"]\n[[package]]\nname = "codex-implicit"\nversion = "0.0.0"\n[[package]]\nname = "codex-cli"\nversion = "0.167.0"\nsource = "registry+example"\n')
-            release.set_workspace_version(root, "0.167.0", "0.167.0-fork.bbbbbbbb")
-            self.assertIn('dependencies = ["codex-implicit 0.167.0-fork.bbbbbbbb"]', lock.read_text())
-            self.assertIn('name = "codex-implicit"\nversion = "0.167.0-fork.bbbbbbbb"', lock.read_text())
-            self.assertIn('version = "0.167.0"\nsource = "registry+example"', lock.read_text())
-            self.assertIn('version = "0.167.0-fork.bbbbbbbb"', (root / "codex-rs/Cargo.toml").read_text())
 
     def test_archive_extraction_rejects_traversal_and_links(self):
         for name, kind in [("../outside", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE), ("bin/codex", tarfile.SYMTYPE)]:
@@ -245,8 +292,13 @@ class ForkReleaseTests(unittest.TestCase):
                     )
                     return ""
 
+                workspace = root / "codex-rs"
+                workspace.mkdir()
+                (workspace / "Cargo.toml").write_text('[workspace.package]\nversion = "0.0.0"\n')
+                (workspace / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "codex-cli"\nversion = "0.0.0"\n')
+                before = {path.name: path.read_bytes() for path in workspace.iterdir()}
                 destination = root / "prepared"
-                with patch("fork_release.run", side_effect=download), patch("fork_release.set_workspace_version"):
+                with patch("fork_release.run", side_effect=download), patch("fork_release.ROOT", root):
                     release.prepare(argparse.Namespace(
                         tag="rust-v0.167.0-fork.bbbbbbbb", upstream_commit="a" * 40,
                         target=target, package_dir=destination, env_file=root / "env",
@@ -255,6 +307,8 @@ class ForkReleaseTests(unittest.TestCase):
                 self.assertEqual(provenance["target"], target)
                 self.assertEqual(provenance["upstreamTarget"], release.upstream_target(target))
                 self.assertIn("CODEX_BWRAP_SHA256=", (root / "env").read_text())
+                self.assertIn("CODEX_RELEASE_VERSION=0.167.0-fork.bbbbbbbb\n", (root / "env").read_text())
+                self.assertEqual({path.name: path.read_bytes() for path in workspace.iterdir()}, before)
 
     def test_overlay_rebuilds_cli_and_executor_and_preserves_other_helpers(self):
         for target in release.TARGETS:

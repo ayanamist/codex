@@ -17,10 +17,396 @@ independently pinned archive checksum. Registry, remaining git sources, and
 third-party build artifacts retain the standard rust-cache policy.
 Standalone-executor build and packaging coverage was fixed on the same date
 against the current fork changes; CLI and executor now share the fork build.
+Updated on 2026-11-11 against `47864b7bb4` plus local changes: internal Cargo
+versions are normalized to `0.0.0` only in a disposable build checkout; the
+integration branch retains upstream sources, and final executables stamp
+release identity through `codex-build-info`.
 Keywords: fork, release, upstream tag, version, helpers, V8, voice, installer,
 glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings, commit hash,
 SemVer suffix, paths-ignore, platform matrix, x64, ARM64, cache eviction,
 source replacement, V8 snapshot, submodules.
+
+## Compiler-cache investigation: run 42941045713
+
+Investigated on 2026-11-11 against successful release run
+[`42941045713`](https://github.com/ayanamist/codex/actions/runs/42941045713),
+source `74593b74690c7bba7e9a68ddd0fdb5c6e3ac61b2`, upstream `0.167.1`,
+and local checkout `47864b7bb4`. This initial diagnosis preceded the
+compiler-cache implementation documented in the next section. Evidence comes
+from the run/jobs APIs, downloaded job logs, all three Cargo timing artifacts,
+the cache API snapshot, and the pinned rust-cache implementation. No build,
+test, dependency installation, or sccache benchmark was performed at that stage.
+
+### Observed build work
+
+The workflow took 94 min 25 s from creation to its final update. The following
+durations exclude setup, packaging, and cache upload:
+
+| Target | Build step | Final `codex` bin task | `codex-tui` library | `codex-core` library |
+| --- | --- | --- | --- | --- |
+| Linux x64 GNU | 53 min 26 s | 25 min 56 s | 9 min 6 s | 7 min 10 s |
+| Windows x64 MSVC | 63 min | 30 min 8 s | 10 min 48 s | 8 min 13 s |
+| macOS ARM64 | 90 min 33 s | 36 min 9 s | 28 min 51 s | 15 min 1 s |
+
+Build-step durations come from the jobs API; task durations come from the
+uploaded `rust-build-timings-*` HTML files. Tasks overlap, so columns must not
+be summed. The final bin task includes compiler/codegen/optimization/link work;
+these artifacts do not isolate system-linker time. Both the run and local
+workspace use `lto = "thin"`, `codegen-units = 4`, three Cargo jobs, and the
+workflow's `CARGO_PROFILE_RELEASE_DEBUG=0` override. ThinLTO can increase final
+link-time optimization work; its share of the bin duration was not separately
+profiled. See [Cargo profile semantics](https://doc.rust-lang.org/cargo/reference/profiles.html#lto).
+
+Summing task durations, rather than elapsed time, gives about 1,294/1,439/1,440
+seconds of third-party work for Linux/Windows/macOS, versus
+5,388/6,417/10,188 seconds for packages carrying this fork's stamped version.
+The last third-party task finishes about 13 min 43 s / 16 min 11 s /
+16 min 30 s after the build starts. These measurements show that substantial
+workspace and executable work remains after third-party compilation. They are
+not predictions of warm-cache savings because scheduling and overlap change.
+
+### Confirmed unnecessary cold cache
+
+All three restore logs say `No cache found.` The previous successful run
+[`42820664456`](https://github.com/ayanamist/codex/actions/runs/42820664456)
+had saved caches using the same `fork-release-v2` prefix. Its root manifest
+differs from this run only in `[workspace.package].version`, `0.167.0` to
+`0.167.1`. However, the workflow embeds the entire root manifest hash in the
+user-supplied cache key:
+
+```yaml
+key: ${{ matrix.runner }}-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.toml') }}
+```
+
+The old/new root-manifest hashes differ, while the automatic compiler/env
+and dependency-hash suffixes are unchanged on each platform. The pinned
+action's fallback restore key retains the complete user-supplied key; it only
+drops the final automatic manifest/lock/config hash. Consequently, even a
+version-only root-manifest change blocks fallback to the previous cache.
+See the pinned [key construction](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/config.ts)
+and [restore implementation](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/restore.ts).
+
+The cache API snapshot during this investigation retained all six old/new
+entries, about 7.09 GiB in total. This run saved approximately 1.26 GiB for
+Linux, 1.20 GiB for Windows, and 1.08 GiB for macOS. The evidence identifies
+key invalidation, rather than eviction, as the cause of this run's misses.
+This does not rule out future storage-pressure eviction.
+
+The existing action already caches **compiled third-party artifacts**, as
+well as dependency downloads. The first improvement should be to fingerprint
+the virtual workspace's actual build settings separately from its release
+version. Retain relevant profile, patch, target/native inputs and existing
+compiler/environment isolation, while allowing ordinary manifest/dependency
+changes to use the action's fallback. Do not simply remove all explicit
+root-manifest coverage: the pinned implementation traverses package-member
+manifests, whereas this virtual root owns the release profile.
+
+### What an additional compiler cache can cover
+
+[Mozilla sccache's Rust support](https://github.com/mozilla/sccache/blob/main/docs/Rust.md)
+can cache ordinary library rustc invocations, including workspace libraries.
+It cannot cache invocations that use a system linker, including `bin`,
+`dylib`, `cdylib`, and `proc-macro` crates. Build-script binaries and script
+execution likewise are not replaced by a library compiler-cache hit. In
+particular, it cannot directly reuse the final `codex` or standalone executor
+bin task above. Rust incremental compilation must be disabled; release already
+defaults to disabled, and rust-cache also sets `CARGO_INCREMENTAL=0`.
+
+This repository has another obstacle to workspace cache reuse:
+[`set_workspace_version`](https://github.com/ayanamist/codex/blob/74593b74690c7bba7e9a68ddd0fdb5c6e3ac61b2/.github/scripts/fork_release.py#L178)
+changes all inherited workspace package versions and their lockfile identities
+to the new commit-derived fork version before every release build. Inference:
+changed package identities/compiler inputs and version-bearing environment
+values are likely to invalidate a large portion of workspace compiler-cache
+entries, even when library source files did not change. Sccache hit rates across
+newly stamped releases have not been measured. Enabling
+`cache-workspace-crates: true` alone also does not make Cargo treat changed
+package identities as fresh.
+
+Separating release identity from internal library package versions could make
+workspace caching more useful, but requires a separate contract review. Many
+production paths read `env!("CARGO_PKG_VERSION")`, including the TUI version,
+update checks, app server identity, and telemetry. Stamping only two executable
+packages without addressing these consumers would change visible behavior.
+
+The [official sccache action](https://github.com/Mozilla-Actions/sccache-action)
+and [GHA backend](https://github.com/mozilla/sccache/blob/main/docs/GHA.md)
+support `RUSTC_WRAPPER=sccache` with `SCCACHE_GHA_ENABLED=true`. This is a viable
+trial after the existing cache-key issue is fixed, with pinned versions and
+hit/miss/non-cacheable statistics. Its remote entries share repository cache
+storage with rust-cache. `SCCACHE_CACHE_SIZE` limits the local disk backend,
+not remote GHA storage; see [sccache configuration](https://github.com/mozilla/sccache/blob/main/docs/Configuration.md).
+
+Recommended order: fix the existing restore-key invalidation; measure a warm
+build with unchanged compiler flags; then evaluate sccache against both a
+repeat build and a new commit-derived release. If the workspace stamping
+prevents useful hits, review release identity separately. If the final bin
+task remains dominant, evaluate ThinLTO/codegen changes with binary-size and
+runtime measurements; compiler caching alone does not remove that work.
+
+### Evidence retrieval and limitations
+
+```sh
+gh api 'repos/ayanamist/codex/actions/runs/42941045713/jobs?per_page=100'
+gh api repos/ayanamist/codex/actions/runs/42941045713/logs > /tmp/codex-42941045713-logs.zip
+gh api 'repos/ayanamist/codex/actions/runs/42941045713/artifacts?per_page=100'
+# Cargo timing artifacts: Linux, Windows, macOS respectively.
+gh api repos/ayanamist/codex/actions/artifacts/13823870185/zip > /tmp/codex-42941045713-linux-timings.zip
+gh api repos/ayanamist/codex/actions/artifacts/13824280814/zip > /tmp/codex-42941045713-windows-timings.zip
+gh api repos/ayanamist/codex/actions/artifacts/13824499818/zip > /tmp/codex-42941045713-macos-timings.zip
+gh api 'repos/ayanamist/codex/actions/caches?per_page=100'
+git diff aeae161db7 74593b7469 -- codex-rs/Cargo.toml
+rg -n 'CARGO_PKG_VERSION' codex-rs/cli/src codex-rs/tui/src codex-rs/exec-server codex-rs/app-server/src
+```
+
+The timing HTML embeds a JSON `UNIT_DATA` array with package version, target,
+start, duration, and optional frontend/codegen sections. Grouping by the
+`0.167.1-fork.74593b74` version yields the workspace/third-party totals above.
+Artifacts and logs have retention limits; cache listings are mutable snapshots.
+No full-release warm-build speedup or optimization-setting change was validated.
+The targeted remote library probe in the next section establishes a narrower
+sccache result. No local compilation was performed.
+
+## Compiler-cache implementation and upstream version semantics
+
+Implemented and verified on 2026-11-11 against checkout `47864b7bb4`, workspace
+`0.167.1`, plus these uncommitted changes. Scope: release cache identity, pinned
+sccache integration, a manual cache benchmark, and version-stamping diagnosis.
+Release optimization settings and the existing runtime version contract are
+retained. Keywords: sccache, cache-key, benchmark-only, workspace version,
+`0.0.0`, package identity, ThinLTO.
+
+### Upstream development versions differ from release-tag versions
+
+Upstream `main` uses `[workspace.package].version = "0.0.0"`. However,
+the upstream release commit
+[`0a94398fa6`](https://github.com/openai/codex/commit/0a94398fa60c4fac0e7659e4213a0a36e613dd46)
+for `rust-v0.167.1` changes exactly that field from `0.0.0` to `0.167.1`.
+The preceding commit still has `0.0.0`. The fork inherited `0.167.1` when it
+merged this release tag; this particular change was not introduced by the fork.
+The unchanged upstream lockfile still records 171 local packages as `0.0.0`.
+
+The fork adds a separate transformation: `prepare` changes all inherited
+workspace package versions to `0.167.1-fork.<commit>`. This has an observed
+compiler-cache cost, even for source-identical internal libraries. It is not
+necessary to change every internal library's Cargo identity just to identify
+the delivered application. Nevertheless, simply removing the transformation
+would change existing behavior: Clap version output, the TUI version constant,
+update checks, telemetry and several protocol fields read `CARGO_PKG_VERSION`.
+`BuildInfo` already reads package metadata for some runtime identities, but
+that does not cover all of these consumers.
+
+The deeper change, implemented below, makes application release identity an
+explicit runtime/build-info input while keeping internal package identities
+stable, then migrate the consumers and their tests together. Restoring the
+entire integration workspace to `0.0.0` alone does not implement that contract:
+the current resolver also derives the pinned upstream release from the workspace
+version. The initial cache change measured that cost; the subsequent version
+migration below removes the coupling while preserving application identities.
+
+### Implemented cache behavior
+
+`fork_release.py cache-key` now emits a stable SHA-256 of the virtual root's
+profile, patch, replacement, resolver and inherited package settings, excluding
+the package version. Ordinary workspace dependency updates are left to
+rust-cache's automatic dependency fingerprint and fallback. Native compiler
+inputs remain covered by the existing rust-cache environment rules and
+`LIBSQLITE3_FLAGS`. The workflow no longer uses the entire root manifest hash
+as its restore prefix. Switching from the previous key requires a new cache
+entry once; no old cache entries were deleted.
+
+The workflow installs `Mozilla-Actions/sccache-action` pinned to commit
+`fc920bf0ec8de6ee65d409111f7ec508035751ba` (`v0.0.11`) with sccache
+`v0.19.0`. Rust build steps set `RUSTC_WRAPPER=sccache`; the GHA backend uses
+the `fork-release-v1` sccache namespace. The existing third-party Cargo cache
+remains enabled. Initial builds save JSON hit/miss/non-cacheable statistics
+alongside Cargo HTML timings in `rust-build-timings-<target>`.
+
+A manual dispatch with `verify_compiler_cache=true` is a **benchmark only**:
+it resolves the pinned upstream package and builds the selected commit without
+allocating a tag or publishing a release, including when that commit was
+already published. After the first build and metrics upload, it cleans the
+release target directory, resets sccache counters, and repeats the same build.
+The second metrics artifact is `rust-warm-build-timings-<target>`. Normal pushes
+and default manual dispatches keep the single-build release procedure. All
+three matrix targets and the existing workflow serialization still apply.
+The warm benchmark adds another full executable optimization/linking pass and
+is disabled by default.
+
+### Targeted remote measurement
+
+With user approval, the official Linux musl sccache `v0.19.0` prebuilt archive
+was installed on the configured remote build host after verifying SHA-256
+`aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd`.
+The probe ran through the personal remote-dev tool using Rust/Cargo 1.95.0,
+four Cargo jobs, `--release --target x86_64-unknown-linux-gnu`, release debug
+zero, and incremental compilation disabled.
+
+A disposable source copy built the real `codex-build-info` library and its
+dependencies. Before every measurement its Cargo target directory was removed,
+so Cargo could not simply reuse existing artifacts. The sccache local disk
+backend and source paths were preserved across runs:
+
+| Measurement | Elapsed | Rust cache hits | Rust cache misses |
+| --- | --- | --- | --- |
+| Cold, version `0.167.1-fork.aaaaaaaa` | 14.04 s | 0 | 37 |
+| Same version, clean Cargo target | 4.80 s | 37 | 0 |
+| Only stamp changed to `0.167.1-fork.bbbbbbbb`, clean target | 4.84 s | 33 | 4 |
+
+The four workspace libraries were `codex-utils-absolute-path`,
+`codex-utils-home-dir`, `codex-install-context`, and `codex-build-info`.
+All four cacheable internal library tasks missed after the version-only
+change; third-party library tasks remained hits. Build-script executables and
+proc macros remained non-cacheable. All three Cargo invocations succeeded.
+This is a real but small dependency graph, not a full CLI benchmark or a
+measurement of the remote GHA backend. It does not establish a release-wide
+speedup or macOS/Windows cache behavior.
+
+The local ignored probe is `.cache/remote-dev/probe-release-sccache.py`; its
+source copy, timings, logs and JSON results were created below the remote
+`.cache/remote-dev/release-sccache-mam310i_/` directory. The personal tool's
+README records its invocation. It never edited the owning build mirror's
+source files or package versions.
+
+Verification: 28 fork-release Python tests, 24 release-validator tests and
+7 V8-source-preparation tests passed on the remote host; the cache-key CLI
+smoke check passed there. Local actionlint and Git whitespace checks passed.
+The new GitHub Actions flow, complete CLI/executor release builds, remote GHA
+cache writes/reads, and cross-platform behavior remain unverified. No commit,
+push, workflow dispatch, tag allocation or release publication was performed.
+
+```sh
+git show 0a94398fa6 -- codex-rs/Cargo.toml
+git show 0a94398fa6^:codex-rs/Cargo.toml
+python3 .cache/remote-dev/remote-dev.py exec -- python3 -m unittest discover -s .github/scripts -p test_fork_release.py
+python3 .cache/remote-dev/remote-dev.py exec -- python3 -m unittest discover -s .github/scripts -p test_releases.py
+python3 .cache/remote-dev/remote-dev.py exec -- python3 -m unittest discover -s .github/scripts -p test_prepare_rusty_v8_source.py
+actionlint -oneline .github/workflows/rust-release.yml
+git diff --check
+```
+
+## Build-time version adaptation without upstream source churn
+
+Implemented on 2026-11-11 against `47864b7bb4` plus local changes. Scope: the
+Cargo release workflow, internal package identities and application release
+identity. The earlier directly edited consumer migration was withdrawn at the
+user's request. Keywords: source preparation, `application_version`,
+`CODEX_RELEASE_VERSION`, `0.0.0`, tokenizer, upstream merges, compiler cache.
+
+This change leaves the integration branch's original Cargo.toml and Cargo.lock
+unchanged, including its existing fork dependencies.
+`resolve` reads the upstream release base from the original workspace version
+and verifies the published stable tag and its ancestry as before. There is no
+separate version pin to update. The build job then invokes
+[prepare_fork_sources.py](../../.github/scripts/prepare_fork_sources.py) in its
+disposable checkout, before Cargo metadata and cache restoration.
+
+The script plans all edits before writing any source. It normalizes inherited
+internal package versions to `0.0.0` in the build copy, converts application
+version reads to `codex_build_info::application_version()`, and adds the required
+internal dependency edges to manifests and Cargo.lock. External package
+identities/checksums/sources stay unchanged. The script never inserts a release
+version string into libraries, so two releases produce identical adapted
+library source when their original source is identical.
+
+The permanent Rust change is the small build-info interface and its tests.
+`prepare` exports `CODEX_RELEASE_VERSION` and `STABLE_GIT_COMMIT`; the existing
+`initialize!()` macro reads these compile-time inputs only where it expands in
+executable entry points. Shared libraries read the initialized application
+version at runtime. A compiled stamp takes precedence over package metadata;
+without a stamp, valid package metadata is the fallback, then `0.0.0` for an
+unpackaged source build. Existing `BuildInfo::initialize(commit)` callers remain
+supported.
+
+### Automatic coverage and failure behavior
+
+The adapter scans workspace Rust files and discovers their owning packages;
+it does not use a list of upstream file names or a saved patch. Supported
+new call sites are picked up on subsequent runs. A Rust lexer skips nested
+comments, quoted/raw strings and character literals. Conversion covers:
+
+- Full Cargo version reads, optional reads, and major/minor/patch components.
+- Version-dependent `concat!` expressions and string constants, including
+  their imports, references and implicit format captures.
+- Clap's shorthand version attributes and `crate_version!()` calls.
+- Release executable entry points discovered from their Cargo manifests,
+  ensuring initialization precedes argument parsing.
+
+Unsupported fields, static/constant shapes, import aliases, shadowed version
+constants, or remaining Cargo version keys fail with a source path before any
+files are written. Unknown macro aliases/runtime reads cannot silently leave a
+literal Cargo version key behind. This is a guarded source adapter, not a full
+Rust parser; new unsupported syntax requires extending the adapter and tests.
+Code embedded in strings/comments is intentionally preserved, and generated
+Rust outside the workspace source scan is outside this conversion's scope.
+
+The current workspace plans 161 changed build-copy files across 29 packages.
+Those changes are **not** retained in the owning worktree. The script supports
+`--check` for a read-only plan and is idempotent after preparation. Its JSON
+report is uploaded with the initial timing/cache statistics artifact. The
+report lives outside the Cargo cache so restoring a cache cannot overwrite it.
+
+```sh
+# Read-only, no Rust compilation or source changes.
+python3 .github/scripts/prepare_fork_sources.py --check
+# Only in a disposable checkout, before Cargo metadata/build:
+python3 .github/scripts/prepare_fork_sources.py --report build-metrics/fork-source-preparation.json
+```
+
+### Verification evidence
+
+The build-info seam was measured remotely with a disposable release-mode probe
+linking the real build-info library and Clap. Each round removed Cargo artifacts
+and retained only sccache's local backend:
+
+| Measurement | Elapsed | Rust hits | Rust misses | Executable version |
+| --- | --- | --- | --- | --- |
+| Cold | 13.64 s | 0 | 49 | `0.167.1-fork.aaaaaaaa` |
+| Same identity, clean target | 4.35 s | 49 | 0 | `0.167.1-fork.aaaaaaaa` |
+| New executable identity, clean target | 4.53 s | 49 | 0 | `0.167.1-fork.bbbbbbbb` |
+
+All cacheable internal libraries remain hits after the executable stamp changes;
+`--version` changes correctly. Binary/build-script/proc-macro linker tasks remain
+non-cacheable. The ignored probe is `.cache/remote-dev/probe-stable-version.py`;
+results are in remote `.cache/remote-dev/stable-version-sccache-a6nkw6hr/`.
+This establishes the runtime identity seam, not a full Actions speedup or a
+measurement of the remote GHA backend.
+
+A local disposable source copy was prepared with the actual adapter, then
+synchronized to the configured remote build mirror using remote-dev's `--source`
+option. Its CLI/executor `--offline --locked --all-targets` check passed in
+3 min 54 s. The owning workspace was not bulk-rewritten. The preceding direct
+migration also built both actual debug binaries. The generated-source copy
+was then built separately (6 min 31 s), and both actual executables reported
+`0.167.1-fork.bbbbbbbb`. Isolated app-server initialization returned that version
+in its User-Agent, and executor initialization returned it in
+`environmentInfo.executorVersion`. Subsequent adapter guard improvements were
+checked to generate byte-identical Rust/manifests/lockfiles to this verified
+build snapshot.
+
+Regression tests cover new upstream source files, idempotence, read-only plans,
+unchanged external lock entries, comments/raw strings, constants/formatting,
+Clap, invalid/unsupported syntax and all-or-nothing failure before writes.
+Build-info tests cover compiled versus package identity and update comparisons.
+Final verification passed 40 adapter/fork-release Python tests, 24 release
+validator tests, and 12 build-info Rust tests (11 unit and one integration).
+Build-info formatting and normal Clippy passed. Strict `-D warnings` Clippy
+stops on the unchanged `is_newer_release::key` tuple's pre-existing
+`type_complexity` warning; its signature was checked against HEAD and was not
+changed to expand this task's scope. Actionlint and Git whitespace checks pass.
+The original owning source snapshot is restored to the remote mirror at the
+end, preserving its compiled caches.
+No changes were committed or pushed, and no Actions run/publication was started.
+Windows/macOS builds and release-mode full CLI timings remain unverified.
+
+```sh
+python3 .cache/remote-dev/remote-dev.py exec -- python3 -m unittest discover -s .github/scripts -p 'test_*fork*.py'
+# Personal helper creates the disposable local generated-source copy.
+python3 .cache/remote-dev/prepare-build-copy.py
+python3 .cache/remote-dev/remote-dev.py --source .cache/remote-dev/prepared-source exec -- cargo check --offline --locked --manifest-path codex-rs/Cargo.toml -p codex-cli -p codex-exec-server-cli --all-targets
+actionlint -oneline .github/workflows/rust-release.yml
+git diff --check
+```
 
 ## Upstream integration: rust-v0.167.1
 
@@ -142,7 +528,7 @@ token's tag creation triggering another run, which
 [GitHub normally suppresses](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 No additional personal access token or notification integration is required.
 
-The workflow verifies that the base matches the unmodified workspace version,
+The workflow resolves the base from the unmodified upstream workspace version,
 that the upstream release is stable and published, and that its resolved tag
 commit is an ancestor of the fork commit. Merely labeling arbitrary main-branch
 code with an older release version is insufficient.
@@ -157,8 +543,8 @@ The single [release workflow](../../.github/workflows/rust-release.yml) invokes
    superseded/already published commit.
 2. `prepare`: download `codex-package-<upstream-target>.tar.gz` and its official checksum
    manifest from `openai/codex`; verify the archive, package metadata, voice
-   inventory, and runtime commit; stamp the full fork version in the isolated
-   CI checkout and export build inputs.
+   inventory, and runtime commit; export the full fork version and commit for
+   executable entry points without changing Cargo package identities.
 3. `assemble`: require and replace both `bin/codex[.exe]` and
    `bin/codex-exec-server[.exe]`, update package and voice metadata, verify reused
    upstream files are unchanged, and create the new gzip archive.
@@ -830,12 +1216,12 @@ cd codex-rs
 cargo tree --offline --locked -p codex-cli --edges normal,build --prefix none --format '{p}'
 ```
 
-Cargo.toml owns the compiled package version. Creating a tag alone does not
-change `codex --version`. `prepare` changes the workspace version and all local
-workspace package entries/references in Cargo.lock, including implicit workspace
-members, only in the CI checkout. It accepts upstream lockfiles whose local
-package entries still carry `0.0.0`; registry/git package versions stay unchanged.
-The integration branch retains the upstream version to reduce merge conflicts.
+Internal Cargo package versions remain `0.0.0`. Creating a tag alone does not
+change `codex --version`: `prepare` exports `CODEX_RELEASE_VERSION`, and the
+`codex_build_info::initialize!()` macro embeds it only in executable entry
+points. Libraries read `application_version()` at runtime. The upstream base is resolved before source adaptation from the unchanged
+integration manifest. Only the disposable build copy normalizes Cargo package
+identities and adds the adapter dependencies; `prepare` exports identity inputs.
 
 The [release validator](../../.github/scripts/releases.py),
 [Unix installer](../../scripts/install/install.sh),

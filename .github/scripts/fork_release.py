@@ -141,15 +141,17 @@ def automatic_tag(base: str, commit: str) -> tuple[str, bool]:
     return tag, True
 
 
-def resolve(tag: str | None, output: Path) -> None:
+def resolve(tag: str | None, output: Path, *, benchmark_only: bool = False) -> None:
     workspace = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())
     base = workspace["workspace"]["package"]["version"]
+    if not is_valid_release_version(base) or "-" in base or base == "0.0.0":
+        raise ValueError("Resolve from an upstream release checkout with a stable package version")
     if tag is None:
         commit_tag(base, "a" * 40)
     else:
-        base, _ = parse_tag(tag)
-    if workspace["workspace"]["package"]["version"] != base:
-        raise ValueError("Fork tag base must match the unchanged upstream workspace version")
+        tag_base, _ = parse_tag(tag)
+        if tag_base != base:
+            raise ValueError("Fork tag base must match the unchanged upstream workspace version")
     upstream_tag = f"rust-v{base}"
     release = github_json(f"repos/{UPSTREAM}/releases/tags/{upstream_tag}")
     if release["draft"] or release["prerelease"] or release["tag_name"] != upstream_tag:
@@ -160,65 +162,43 @@ def resolve(tag: str | None, output: Path) -> None:
     fork_commit = run("git", "rev-parse", "HEAD")
     if tag is not None:
         verify_tag_commit(tag, fork_commit)
-    should_publish = True
-    if tag is None:
+    should_publish = not benchmark_only
+    if benchmark_only:
+        # A manual cache measurement must also work for an already published
+        # commit, without reserving a tag or modifying GitHub Releases.
+        tag = commit_tag(base, fork_commit)
+    elif tag is None:
         tag, should_publish = automatic_tag(base, fork_commit)
     if not tag:
-        emit(output, {"should_publish": "false"})
+        emit(output, {"should_publish": "false", "should_build": "false"})
         return
     _, version = parse_tag(tag)
     emit(output, {
         "tag": tag, "should_publish": str(should_publish).lower(),
+        "should_build": str(should_publish or benchmark_only).lower(),
         "version": version, "upstream_tag": upstream_tag,
         "upstream_commit": upstream_commit, "fork_commit": fork_commit,
         "rust_toolchain": tomllib.loads((ROOT / "codex-rs/rust-toolchain.toml").read_text())["toolchain"]["channel"],
     })
 
 
-def set_workspace_version(root: Path, base: str, version: str) -> None:
-    """Change only local workspace package identities in the isolated CI checkout."""
-    manifest = root / "codex-rs/Cargo.toml"
-    workspace = tomllib.loads(manifest.read_text())
-    if workspace["workspace"]["package"]["version"] != base:
-        raise ValueError("Workspace version does not match the upstream base")
-    names = set()
-    # Cargo also adds local path dependencies as implicit workspace members.
-    for member_manifest in (root / "codex-rs").rglob("Cargo.toml"):
-        if "target" in member_manifest.relative_to(root / "codex-rs").parts:
-            continue
-        package = tomllib.loads(member_manifest.read_text()).get("package", {})
-        if package.get("version") == {"workspace": True}:
-            names.add(package["name"])
-    lock_path = root / "codex-rs/Cargo.lock"
-    lock = lock_path.read_text()
-    blocks = lock.split("[[package]]")
-    old_versions = {}
-    for index in range(1, len(blocks)):
-        package = tomllib.loads("[[package]]" + blocks[index])["package"][0]
-        if package["name"] in names and "source" not in package:
-            if package["version"] not in {base, "0.0.0"}:
-                raise ValueError(f"Unexpected workspace lock version: {package['name']}")
-            old_versions[package["name"]] = package["version"]
-            blocks[index], count = re.subn(
-                rf'^version = "{re.escape(package["version"])}"$', f'version = "{version}"',
-                blocks[index], count=1, flags=re.M,
-            )
-            if count != 1:
-                raise ValueError("Cannot update workspace lock version")
-    if old_versions.keys() != names:
-        raise ValueError(f"Workspace packages missing from lockfile: {sorted(names - old_versions.keys())}")
-    lock_text = "[[package]]".join(blocks)
-    # Version-qualified references can distinguish a local package from a registry one.
-    for name, old_version in old_versions.items():
-        lock_text = lock_text.replace(f'"{name} {old_version}"', f'"{name} {version}"')
-    manifest_text, count = re.subn(
-        rf'(\[workspace\.package\]\s*\nversion = "){re.escape(base)}(")',
-        rf'\g<1>{version}\2', manifest.read_text(), count=1,
-    )
-    if count != 1:
-        raise ValueError("Cannot update workspace package version")
-    manifest.write_text(manifest_text, encoding="utf-8")
-    lock_path.write_text(lock_text, encoding="utf-8")
+def build_cache_settings_hash(manifest: dict) -> str:
+    """Keep virtual-root build settings in the restore key, not release identity.
+
+    rust-cache already fingerprints package manifests and locked dependencies,
+    and can fall back across dependency changes. The virtual root's profiles
+    need explicit coverage, but its package version must not block that fallback.
+    """
+    workspace = manifest.get("workspace", {})
+    package = {key: value for key, value in workspace.get("package", {}).items() if key != "version"}
+    settings = {
+        "profile": manifest.get("profile", {}),
+        "patch": manifest.get("patch", {}),
+        "replace": manifest.get("replace", {}),
+        "resolver": workspace.get("resolver"),
+        "package": package,
+    }
+    return hashlib.sha256(json.dumps(settings, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def extract_package(archive: Path, destination: Path) -> None:
@@ -315,10 +295,10 @@ def prepare(args: argparse.Namespace) -> None:
         "CODEX_VOICE_HELPER_COMMIT": args.upstream_commit,
         "STABLE_GIT_COMMIT": fork_commit,
         "FORK_VERSION": version,
+        "CODEX_RELEASE_VERSION": version,
     }
     if "linux" in args.target:
         values["CODEX_BWRAP_SHA256"] = digest(args.package_dir / "codex-resources/bwrap")
-    set_workspace_version(ROOT, base, version)
     emit(args.env_file, values)
 
 
@@ -431,6 +411,9 @@ def main() -> None:
     resolve_parser = commands.add_parser("resolve")
     resolve_parser.add_argument("--tag", help="Explicit tag; otherwise allocate or resume a release for this commit.")
     resolve_parser.add_argument("--github-output", required=True, type=Path)
+    resolve_parser.add_argument("--benchmark-only", action="store_true", help="Build without allocating a tag or publishing a release.")
+    cache_parser = commands.add_parser("cache-key", help="Fingerprint virtual-root build settings before release stamping.")
+    cache_parser.add_argument("--github-output", required=True, type=Path)
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument("--tag", required=True)
     prepare_parser.add_argument("--upstream-commit", required=True)
@@ -447,7 +430,10 @@ def main() -> None:
     publish_parser.add_argument("--directory", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "resolve":
-        resolve(args.tag, args.github_output)
+        resolve(args.tag, args.github_output, benchmark_only=args.benchmark_only)
+    elif args.command == "cache-key":
+        manifest = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())
+        emit(args.github_output, {"build_settings_hash": build_cache_settings_hash(manifest)})
     elif args.command == "prepare":
         prepare(args)
     elif args.command == "assemble":

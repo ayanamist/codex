@@ -51,15 +51,25 @@ verification](../../docs/fork/release-management.md#avoiding-v8-submodule-downlo
 
 Each target caches Cargo registry/git data and compiled third-party crates with
 `Swatinem/rust-cache`, pinned to v2.9.3's commit. Cache identity includes the
-runner/target, Rust/compiler environment, manifests, and lockfile. Restoration
-precedes fork version stamping; workspace crates are rebuilt for the new version
-and commit. The `fork-release-v2` cache retains other git dependencies for reuse;
+runner/target, Rust/compiler environment, manifests, and lockfile. Internal
+package identities remain `0.0.0`; executable entry points embed the release
+version and commit. The `fork-release-v2` cache retains other git dependencies for reuse;
 the large V8/ICU git tree is never fetched because V8 uses the small snapshot
 described above. Workspace crates and installed Cargo tools remain excluded.
 Successful jobs save the cache. Cargo HTML timings are retained as
 separate `rust-build-timings-*` artifacts for seven days, outside the release's
 `codex-*` download pattern. Gzipped packages upload without redundant ZIP
 compression. See the [diagnosis, baseline, and cache limits](../../docs/fork/release-management.md#windows-dependency-checkout-and-build-caching).
+Updated on 2026-11-11: the explicit cache-key fingerprint covers root build
+settings rather than the entire root manifest, allowing reuse across version
+changes. Rust builds also use the official sccache action pinned to v0.0.11's
+commit and sccache v0.19.0 with the GHA backend. Initial hit/miss/non-cacheable
+JSON statistics accompany the timing artifact. On manual dispatch,
+`verify_compiler_cache=true` builds without allocating a tag or publishing a
+release, then cleans Cargo release artifacts and builds again to measure
+sccache reuse. The warm metrics use a separate `rust-warm-build-timings-*`
+artifact; normal releases still build once. See the
+[implementation, upstream version distinction, and remote probe](../../docs/fork/release-management.md#build-time-version-adaptation-without-upstream-source-churn).
 All three targets have a 180-minute timeout. Release optimization settings are
 retained. Run `42777286813` uploaded caches for all six former targets; the cache
 API subsequently retained only the two macOS entries, consistent with capacity
@@ -75,9 +85,17 @@ above 2.38, including the reused voice runtime and helpers. The Unix installer
 selects the GNU archives. See the [compatibility contract](../../docs/fork/release-management.md#linux-glibc-238-compatibility)
 for evidence and runtime verification limits.
 
-The fork version is written to Cargo.toml and workspace Cargo.lock entries in
-the CI checkout. The integration branch keeps the original upstream version,
-reducing merge conflicts. Installers, startup/doctor update checks, and daemon
+The integration branch retains its original Cargo.toml/Cargo.lock for this change. `resolve`
+selects the upstream release from that original manifest. In the disposable
+build checkout, `prepare_fork_sources.py` normalizes internal package identities
+to `0.0.0` and adapts version consumers before metadata/cache restoration.
+`prepare` exports `CODEX_RELEASE_VERSION`; executable entry points initialize
+`codex-build-info` and adapted libraries read its runtime version interface.
+The script scans new source files automatically and rejects unsupported version
+syntax before writing; it does not depend on a saved upstream patch. Its report
+is included in the build timings artifact. There is no bulk consumer diff or
+separate upstream version pin in the integration branch.
+Installers, startup/doctor update checks, and daemon
 installation accept arbitrary legal SemVer suffixes, with no hash-length check.
 Generated versions use `fork.<eight characters>`; historical numbered releases
 remain supported. GitHub Release flags determine the stable channel. See
