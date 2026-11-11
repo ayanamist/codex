@@ -1,22 +1,97 @@
-## Installing & building
+## Installing & building this fork
 
-### System requirements
+### Install from GitHub Releases
 
-| Requirement                 | Details                                                         |
-| --------------------------- | --------------------------------------------------------------- |
-| Operating systems           | macOS 12+, Ubuntu 20.04+/Debian 10+, or Windows 11 **via WSL2** |
-| Git (optional, recommended) | 2.23+ for built-in PR helpers                                   |
-| RAM                         | 4-GB minimum (8-GB recommended)                                 |
+The `ayanamist/codex` fork publishes standalone packages for these targets:
 
-### DotSlash
+| Platform | Release package | Requirement |
+| --- | --- | --- |
+| Linux x86_64 | `codex-package-x86_64-unknown-linux-gnu.tar.gz` | glibc 2.38 or newer |
+| macOS Apple Silicon | `codex-package-aarch64-apple-darwin.tar.gz` | ARM64 |
+| Windows x64 | `codex-package-x86_64-pc-windows-msvc.tar.gz` | Native Windows, PowerShell installer |
 
-The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
+Linux ARM64, Intel macOS, Windows ARM64, and musl/Alpine packages are not
+currently published. WSL follows the Linux requirements.
+
+On macOS or Linux:
+
+```sh
+curl -fsSL https://github.com/ayanamist/codex/releases/latest/download/install.sh | sh
+```
+
+On Windows, run in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/ayanamist/codex/releases/latest/download/install.ps1 | iex"
+```
+
+These scripts resolve the latest published stable release in
+[`ayanamist/codex`](https://github.com/ayanamist/codex/releases/latest) and verify
+downloaded packages with SHA-256. The packages include the CLI and its companion
+executables and resources; keep the complete package together. The fork does
+not publish the upstream standalone `codex` DotSlash release asset.
+
+To select a specific published release, set `CODEX_RELEASE` to its version
+(with or without the `rust-v` prefix). For example, to install the release
+observed on 2026-11-11:
+
+```sh
+curl -fsSL https://github.com/ayanamist/codex/releases/latest/download/install.sh | CODEX_RELEASE=0.167.0-fork.aeae161d sh
+```
+
+```powershell
+$env:CODEX_RELEASE = '0.167.0-fork.aeae161d'
+try {
+    irm https://github.com/ayanamist/codex/releases/latest/download/install.ps1 | iex
+} finally {
+    Remove-Item Env:CODEX_RELEASE
+}
+```
+
+This selects the installation version for that invocation; it does not pin
+future `codex update` calls. Unix also accepts `sh -s -- --release VERSION`.
+
+### Install paths, migration, and updates
+
+The default command location is `~/.local/bin/codex` on macOS/Linux and
+`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` on Windows. Set
+`CODEX_INSTALL_DIR` to override the command directory. Package contents live
+under `$CODEX_HOME/packages/standalone` (`~/.codex/packages/standalone` by default).
+The installer configures PATH; follow its terminal instructions or open a new
+terminal before running Codex.
+
+The official `chatgpt.com` installers, npm package `@openai/codex`, and Homebrew
+cask `codex` install OpenAI's distribution. To migrate to this fork, run the fork
+installer above. It detects conflicting package-manager installations and can
+offer to uninstall them with confirmation. If an old installation remains,
+check which executable your shell selects:
+
+```sh
+command -v codex
+codex --version
+```
+
+```powershell
+Get-Command codex -All
+codex --version
+```
+
+Current fork versions include a suffix such as `-fork.aeae161d`. Once using the
+fork's standalone installation, update with:
+
+```sh
+codex update
+```
+
+Running the fork installer again also updates it. See
+[CLI installation and update sources](fork/updates.md) for the source contract
+and verification evidence.
 
 ### Build from source
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
+git clone --branch fork-release https://github.com/ayanamist/codex.git
 cd codex/codex-rs
 
 # Install the Rust toolchain, if necessary.

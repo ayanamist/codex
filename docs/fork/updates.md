@@ -1,4 +1,38 @@
-# CLI update sources
+# CLI installation and update sources
+
+## Installation documentation review: 2026-11-11
+
+Scope: installation entry points for `ayanamist/codex` on `fork-release`,
+reviewed against `74593b7469`, workspace version `0.167.1`.
+Keywords: first install, README, migration, platform support, PATH, release assets.
+
+The installers already selected the fork, but the root README still linked to
+the official bootstrap scripts, npm package, Homebrew cask, and upstream release
+assets. `docs/install.md` also cloned the upstream repository and described
+upstream platforms and DotSlash assets. The README and
+[installation guide](../install.md) now document fork bootstrap URLs, supported
+release targets, explicit release selection, install paths, migration, and updates.
+
+A read-only GitHub API check on 2026-11-11 found the latest stable release
+[`rust-v0.167.0-fork.aeae161d`](https://github.com/ayanamist/codex/releases/tag/rust-v0.167.0-fork.aeae161d),
+published on 2026-11-10. Its assets include both installers, the package checksum
+manifest, and exactly three platform packages: Linux x86_64 GNU, macOS ARM64,
+and Windows x64. This matches the current release workflow matrix. The Linux
+glibc 2.38 floor follows the build contract in [release management](release-management.md).
+The published version differs from the local workspace's upstream base; `latest`
+selects a published release, not the local checkout.
+
+Verification uses current installer source, the release workflow, GitHub release
+metadata, and `git diff --check`. This documentation change does not run an
+installer, replace a local binary, or establish runtime compatibility on those
+platforms. Recheck release availability with:
+
+```sh
+gh api repos/ayanamist/codex/releases/latest --jq '{tag_name, html_url, published_at, assets: [.assets[].name]}'
+git diff --check
+```
+
+## Implementation review: 2026-11-10
 
 Scope: the `ayanamist/codex` fork, standalone CLI updates, startup update checks,
 and managed daemon installer downloads. Reviewed on 2026-11-10 against
@@ -64,7 +98,7 @@ GitHub `latest`; hashes have no lexical precedence. Historical numbered releases
 remain installable. GitHub Release metadata determines stable/prerelease status.
 Code pushes to `fork-release` derive the tag and publish automatically, while
 documentation-only pushes are ignored. See [release management](release-management.md)
-for rebuilding only the fork entrypoint while reusing pinned upstream helpers.
+for rebuilding the fork CLI and standalone executor while reusing pinned upstream helpers.
 Linux standalone installs select the fork's `*-unknown-linux-gnu` packages,
 which support glibc 2.38 and newer; the release workflow validates imported
 GLIBC symbol versions across the entire package before publication.
