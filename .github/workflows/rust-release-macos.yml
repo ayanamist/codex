@@ -60,7 +60,8 @@ jobs:
     if: needs.resolve.outputs.should_build == 'true'
     name: Build codex - aarch64-apple-darwin
     runs-on: macos-15
-    timeout-minutes: 180
+    # Run 43135737205 exceeded three hours; allow cold builds and cache saving.
+    timeout-minutes: 300
     permissions:
       contents: write
     defaults:

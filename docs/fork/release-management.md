@@ -26,6 +26,42 @@ glibc, GNU, Windows, MAX_PATH, Cargo, cache, build timings, commit hash,
 SemVer suffix, paths-ignore, platform matrix, x64, ARM64, cache eviction,
 source replacement, V8 snapshot, submodules.
 
+## macOS ARM64 timeout: run 43135737205
+
+Investigated on 2026-11-12 against `d26b61fb1ac6498d49e6bf642518d83ce831ec26`,
+workspace version `0.167.2`, and the macOS ARM64 release
+[job `130910794427`](https://github.com/ayanamist/codex/actions/runs/43135737205/job/130910794427).
+The check annotation explicitly reports that the job exceeded its maximum
+execution time of `3h0m0s`. The build step ran from `01:38:40Z` to `04:38:35Z`
+and was cancelled before signing, packaging, or publication. This establishes
+the configured job timeout as the immediate cancellation cause.
+
+The dependency cache reported `No cache found.` At `02:11:34Z`, sccache twice
+reported that its server had shut down unexpectedly and compilation would
+continue locally on the runner. Compilation output continued afterwards,
+including the `codex-tui` library warning at `03:18:55Z`. Post-cancellation
+sccache statistics contained zero requests, hits, and misses; they do not
+establish cache effectiveness or explain why the server exited. The uploaded
+metrics artifact contains no completed Cargo timing HTML, so this run cannot
+separate optimization, linking, resource pressure, or cache failure costs.
+
+The macOS build job budget is now 300 minutes to allow more cold-build variance
+and time for signing, packaging, and cache saving. Linux and Windows remain at
+180 minutes. Release profiles and build concurrency are unchanged. The longer
+budget has not been verified by a subsequent Actions run and does not establish
+that the sccache failure is resolved or that five hours will suffice.
+
+Evidence and static verification commands (no compilation required):
+
+```sh
+gh api repos/ayanamist/codex/actions/jobs/130910794427
+gh api repos/ayanamist/codex/check-runs/130910794427/annotations
+gh api repos/ayanamist/codex/actions/jobs/130910794427/logs
+gh api repos/ayanamist/codex/actions/artifacts/13915992203/zip > /tmp/codex-43135737205-macos-metrics.zip
+actionlint -oneline .github/workflows/rust-release-macos.yml
+git diff --check
+```
+
 ## Compiler-cache investigation: run 42941045713
 
 Investigated on 2026-11-11 against successful release run
@@ -780,8 +816,9 @@ and binary-size measurements first.
 The earlier Intel macOS job took 178 min 39 s, leaving only 81 s under the
 original 180-minute limit, before adding cache restore/save overhead. Its job
 budget was raised to 240 minutes to accommodate cold-build variance and cache
-saving. The subsequent three-platform scope removes that job; all retained
-targets use 180 minutes.
+saving. The subsequent three-platform scope removed that job and initially set
+all retained targets to 180 minutes. The current macOS ARM64 exception is
+documented in the [timeout follow-up](#macos-arm64-timeout-run-43135737205).
 
 At the time of that change, Windows checkout success and warm-cache wall time
 still required a subsequent Actions run. Run `42777286813` below confirms the

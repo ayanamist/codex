@@ -88,7 +88,10 @@ release, then cleans Cargo release artifacts and builds again to measure
 sccache reuse. The warm metrics use a separate `rust-warm-build-timings-*`
 artifact; normal releases still build once. See the
 [implementation, upstream version distinction, and remote probe](../../docs/fork/release-management.md#build-time-version-adaptation-without-upstream-source-churn).
-All three targets have a 180-minute timeout. Release optimization settings are
+macOS ARM64 has a 300-minute timeout after run `43135737205` exceeded its
+three-hour limit; Linux and Windows retain 180 minutes. See the
+[macOS timeout evidence](../../docs/fork/release-management.md#macos-arm64-timeout-run-43135737205).
+Release optimization settings are
 retained. Run `42777286813` uploaded caches for all six former targets; the cache
 API subsequently retained only the two macOS entries, consistent with capacity
 eviction. The three retained targets' old caches totaled about 11.7 GB. A local

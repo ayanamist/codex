@@ -62,6 +62,10 @@
   Windows follow-up: run `42972181582` exposed implicit CP1252 source decoding;
   the adapter now uses explicit UTF-8 I/O, with LF/CRLF and full-workspace
   encoding regression coverage. Keywords: UTF-8, CP1252, UnicodeDecodeError.
+  macOS timeout follow-up: 2026-11-12, run `43135737205` hit its three-hour
+  job limit after a dependency-cache miss and unexpected sccache server exit;
+  the macOS ARM64 budget is now 300 minutes, pending Actions verification.
+  Keywords: macOS ARM64, timeout, cold build, sccache server exit.
 - [Build and GitHub Release workflows](../../.github/workflows/README.md):
   retained build, packaging, and GitHub Release automation; removed CI,
   tests, Issue/PR automation, and external publication. Keywords: GitHub Actions,
