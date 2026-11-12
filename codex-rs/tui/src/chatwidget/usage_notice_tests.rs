@@ -4,9 +4,7 @@ use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
-use crate::tui::FrameRequester;
 use chrono::TimeZone;
-use codex_app_server_protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 
 fn snapshot(used_percent: i32) -> RateLimitSnapshot {
@@ -275,41 +273,6 @@ fn usable_credits_suppress_notices_and_survive_sparse_updates() {
             /*plan_type*/ None,
         );
         assert_eq!(state.current(), Some((sparse.primary.unwrap(), false)));
-    }
-}
-
-#[tokio::test]
-async fn notice_redraws_when_only_limit_blockers_change() {
-    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
-    let (mut chat, _, _, _) = make_chatwidget_manual_with_sender().await;
-    chat.frame_requester = frame_requester;
-    chat.local_settings.tui.status_line = Some(Vec::new());
-    chat.local_settings.tui.terminal_title = Some(Vec::new());
-    let low = snapshot(/*used_percent*/ 92);
-    chat.on_rate_limit_snapshot(Some(low.clone()));
-    let notice = chat.usage_notice(/*width*/ 80);
-    assert!(notice.is_some());
-    for (limit_id, spend_control_reached, rate_limit_reached_type) in [
-        (None, Some(true), None),
-        (None, None, Some(RateLimitReachedType::RateLimitReached)),
-        (
-            Some("codex_other".to_string()),
-            None,
-            Some(RateLimitReachedType::RateLimitReached),
-        ),
-    ] {
-        while draw_rx.try_recv().is_ok() {}
-        let mut blocked = low.clone();
-        blocked.limit_id = limit_id;
-        blocked.spend_control_reached = spend_control_reached;
-        blocked.rate_limit_reached_type = rate_limit_reached_type;
-        chat.on_rolling_rate_limit_snapshot(blocked);
-        assert_eq!(chat.usage_notice(/*width*/ 80), None);
-        assert!(draw_rx.try_recv().is_ok());
-        while draw_rx.try_recv().is_ok() {}
-        chat.on_rate_limit_snapshot(/*snapshot*/ None);
-        assert_eq!(chat.usage_notice(/*width*/ 80), notice);
-        assert!(draw_rx.try_recv().is_ok());
     }
 }
 

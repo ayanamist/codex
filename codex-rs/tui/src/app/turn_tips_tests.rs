@@ -533,36 +533,6 @@ async fn working_tip_stays_put_through_mouse_selection() -> Result<()> {
             crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal),
         ))
     );
-    app.transcript_view.jump_to_latest();
-    app.chat_widget
-        .on_rate_limit_snapshot(Some(serde_json::from_value(serde_json::json!({
-            "primary": {"usedPercent": 92, "windowDurationMins": 300},
-        }))?));
-    assert!(app.composer_hint(size.width).is_some());
-    app.render_owned_transcript(&mut tui, size)?;
-    app.handle_owned_transcript_event(
-        &mut tui,
-        &mut server,
-        &TuiEvent::Mouse(MouseEvent {
-            kind: Down(Left),
-            column: 1,
-            row: response_row,
-            modifiers: KeyModifiers::NONE,
-        }),
-    )?;
-    assert!(app.composer_hint(size.width).is_none());
-    app.render_owned_transcript(&mut tui, size)?;
-    assert!(
-        !buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(
-            &tui.terminal,
-        ))
-        .contains("└ Tip:")
-    );
-    {
-        let mut selection = app.chat_widget.rendered_selection.borrow_mut();
-        let crate::rendered_selection::RenderedSelection { view, cells, .. } = &mut *selection;
-        assert_eq!(view.selected_text(cells), None);
-    }
     server.shutdown().await?;
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())

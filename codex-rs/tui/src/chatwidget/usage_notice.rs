@@ -28,6 +28,7 @@ pub(super) struct UsageNoticeState {
 }
 
 impl UsageNoticeState {
+    #[allow(dead_code)]
     fn line(
         &self,
         width: u16,
@@ -164,15 +165,9 @@ pub(super) fn warning_threshold(plan_type: Option<PlanType>, window_minutes: Opt
 }
 
 impl ChatWidget {
-    pub(crate) fn usage_notice(&self, width: u16) -> Option<Line<'static>> {
-        if self.has_applicable_backend_banner()
-            || self.codex_rate_limit_reached_type.is_some()
-            || self.codex_spend_control_reached == Some(true)
-        {
-            return None;
-        }
-        self.usage_notice_state
-            .line(width, Local::now(), self.clock_format)
+    // Fork: the composer usage notice is permanently disabled.
+    pub(crate) fn usage_notice(&self, _width: u16) -> Option<Line<'static>> {
+        None
     }
 
     pub(crate) fn start_usage_notice_read(&mut self, request_id: u64) {

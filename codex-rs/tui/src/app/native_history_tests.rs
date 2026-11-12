@@ -40,7 +40,7 @@ async fn quota_warnings_are_emitted_once_and_survive_native_replay() -> Result<(
         );
         app.flush_native_history(&mut tui);
         assert_eq!(tui.pending_history_lines_for_test(), inserted);
-        assert_eq!(history_cell::warning_count(&app.transcript_cells), 2);
+        assert_eq!(history_cell::warning_count(&app.transcript_cells), 1);
     }
     Ok(())
 }
