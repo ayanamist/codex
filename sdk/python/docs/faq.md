@@ -7,11 +7,8 @@
 
 ## Why does the SDK install a runtime package?
 
-Stable CLI releases publish the SDK with the same version and an exact runtime
-pin. CLI prereleases do not trigger Python package publishing. Independent SDK
-beta releases can still be published manually with a different version number,
-but must pin a compatible runtime. The dependency is installed automatically.
-See [Python SDK releases](../RELEASING.md) for publishing and retry instructions.
+The SDK pins an exact runtime package version. This fork does not publish the SDK
+or its runtime package to PyPI.
 
 ## Thread vs turn
 
