@@ -1,6 +1,6 @@
 {
-  "repository": "https://github.com/seanh-oai/rusty_v8.git",
-  "revision": "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0",
+  "repository": "https://github.com/openai-oss-forks/rusty_v8.git",
+  "revision": "90a65f887a0c0f048f3784afbcb320b373c8a2e0",
   "version": "152.2.0",
-  "archiveSha256": "e2e7f9961af59dbb749a60ac0a3c34c9680f6b86dd04277f2715356b5a52feab"
+  "archiveSha256": "b0b188d1f1d851abd78337818a28a15e84f143b082ce966976e9206617684373"
 }
