@@ -169,6 +169,7 @@ policy:
 
 #[tokio::test]
 async fn host_invocation_policy_falls_back_to_frontmatter() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     for (yaml, expected) in [
         (None, false),
         (Some("interface: {display_name: Demo}"), false),
@@ -186,7 +187,7 @@ async fn host_invocation_policy_falls_back_to_frontmatter() {
         if let Some(yaml) = yaml {
             write_metadata(&root, "demo", yaml);
         }
-        let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+        let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
 
         assert_eq!(snapshot.errors, Vec::new());
         assert_eq!(snapshot.skills.len(), 1);
