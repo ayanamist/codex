@@ -1236,6 +1236,13 @@ engine is being built from source.
 Verified on 2026-11-10 against workspace `0.167.0`: Cargo.lock resolves the
 `v8` crate to `152.2.0`, patched to
 [`seanh-oai/rusty_v8` commit `350c5a859a9b3c84ab8701b3ad51e3b7699b30c0`](https://github.com/seanh-oai/rusty_v8/tree/350c5a859a9b3c84ab8701b3ad51e3b7699b30c0).
+Since `rust-v0.168.0` (checked 2026-11-13) the patch is
+[`openai-oss-forks/rusty_v8` commit `90a65f887a0c0f048f3784afbcb320b373c8a2e0`](https://github.com/openai-oss-forks/rusty_v8/tree/90a65f887a0c0f048f3784afbcb320b373c8a2e0);
+the crate version and the release manifests are unchanged. The source archive
+SHA-256 in `rusty_v8_152_2_0_source.json` was computed locally from that
+commit's GitHub archive. On the build host, the Linux x64 source snapshot,
+prebuilt archive, and bindings passed verification; the macOS and Windows
+artifacts were not downloaded again.
 The action selects
 [`openai/codex` release `rusty-v8-v152.2.0`](https://github.com/openai/codex/releases/tag/rusty-v8-v152.2.0),
 published on 2026-09-16 and marked prerelease. Its sandbox/pointer-compression
@@ -1258,7 +1265,7 @@ during this investigation.
 The action verifies the manifest trust root, then both library and binding
 checksums, and sets `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH`.
 The pinned crate's
-[`build.rs`](https://github.com/seanh-oai/rusty_v8/blob/350c5a859a9b3c84ab8701b3ad51e3b7699b30c0/build.rs)
+[`build.rs`](https://github.com/openai-oss-forks/rusty_v8/blob/90a65f887a0c0f048f3784afbcb320b373c8a2e0/build.rs)
 consumes those overrides in its prebuilt path; setting `V8_FROM_SOURCE=1`
 instead selects a C++ source build. The artifact version, target, and ABI
 features must match the consumer. The runtime currently requests
@@ -1271,7 +1278,7 @@ The fork's source-replacement preparation above now bypasses that fetch in CI.
 More precisely, downloading the large C++ source tree is a consequence of this
 dependency's git layout, not a requirement of linking the prebuilt native
 library. `[patch.crates-io]` replaces `v8 = "=152.2.0"` with the pinned
-`seanh-oai/rusty_v8` git repository. Its `.gitmodules` declares V8, ICU, and
+`openai-oss-forks/rusty_v8` git repository. Its `.gitmodules` declares V8, ICU, and
 other large source repositories, and Cargo recursively fetches submodules by
 default before running the crate's `build.rs`. The prebuilt/source decision
 and `RUSTY_V8_ARCHIVE` override are evaluated later inside that build script;
