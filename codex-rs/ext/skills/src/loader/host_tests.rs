@@ -1,6 +1,7 @@
 use std::fs;
-use std::sync::Arc;
 
+use codex_exec_server::EnvironmentAccess;
+use codex_exec_server::FileSystemEnvironmentAccessor;
 use codex_exec_server::LOCAL_FS;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
@@ -41,11 +42,15 @@ fn write_metadata(root: &TempDir, directory: &str, contents: &str) {
     fs::write(metadata_dir.join("openai.yaml"), contents).expect("write metadata");
 }
 
-fn root_for(temp_dir: &TempDir, scope: SkillScope) -> HostSkillRoot {
+fn root_for<'a>(
+    temp_dir: &TempDir,
+    scope: SkillScope,
+    access: &'a dyn EnvironmentAccess,
+) -> HostSkillRoot<'a> {
     HostSkillRoot::host(
         AbsolutePathBuf::from_absolute_path(temp_dir.path()).expect("absolute root"),
         scope,
-        Arc::clone(&LOCAL_FS),
+        access,
     )
 }
 
@@ -53,6 +58,7 @@ struct PluginSkillFixture {
     root: TempDir,
     plugin_root: AbsolutePathBuf,
     skill_path: AbsolutePathBuf,
+    access: FileSystemEnvironmentAccessor<'static>,
 }
 
 impl PluginSkillFixture {
@@ -71,6 +77,7 @@ impl PluginSkillFixture {
             root,
             plugin_root,
             skill_path,
+            access: FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
         }
     }
 
@@ -85,7 +92,7 @@ impl PluginSkillFixture {
         write_metadata(&self.root, "skills/send-message", contents);
     }
 
-    fn host_root(&self) -> HostSkillRoot {
+    fn host_root(&self) -> HostSkillRoot<'_> {
         HostSkillRoot::plugin(
             PluginSkillRoot {
                 path: self.plugin_root.join("skills"),
@@ -97,13 +104,14 @@ impl PluginSkillFixture {
                 plugin_root: self.plugin_root.clone(),
                 discovery_mode: SkillDiscoveryMode::Recursive,
             },
-            Arc::clone(&LOCAL_FS),
+            &self.access,
         )
     }
 }
 
 #[tokio::test]
 async fn loads_host_frontmatter_dependencies_and_policy() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(
         &root,
@@ -126,7 +134,7 @@ policy:
 "##,
     );
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
 
     assert_eq!(snapshot.errors, Vec::new());
     assert_eq!(
@@ -194,11 +202,12 @@ async fn host_invocation_policy_falls_back_to_frontmatter() {
 
 #[tokio::test]
 async fn invalid_optional_metadata_fails_open() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(&root, "demo", "name: demo\ndescription: Demo skill");
     write_metadata(&root, "demo", "interface: [not-an-interface]");
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::Repo)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::Repo, &access)).await;
 
     assert_eq!(snapshot.errors, Vec::new());
     assert_eq!(
@@ -220,6 +229,7 @@ async fn invalid_optional_metadata_fails_open() {
 
 #[tokio::test]
 async fn loads_host_interface_metadata_and_local_asset_paths() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(&root, "demo", "name: demo\ndescription: Demo skill");
     fs::create_dir_all(root.path().join("demo/assets")).expect("create assets");
@@ -236,7 +246,7 @@ async fn loads_host_interface_metadata_and_local_asset_paths() {
 "##,
     );
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
     let skill_dir = skill_path.parent().expect("skill parent");
 
     assert_eq!(snapshot.errors, Vec::new());
@@ -347,6 +357,7 @@ async fn rejects_plugin_skill_interface_icons_outside_shared_assets() {
 
 #[tokio::test]
 async fn rejects_interface_fields_that_escape_or_fail_validation() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(&root, "demo", "name: demo\ndescription: Demo skill");
     write_metadata(
@@ -355,7 +366,7 @@ async fn rejects_interface_fields_that_escape_or_fail_validation() {
         "interface:\n  icon_small: ../outside.svg\n  brand_color: blue\n",
     );
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
 
     assert_eq!(snapshot.errors, Vec::new());
     assert_eq!(
@@ -377,6 +388,7 @@ async fn rejects_interface_fields_that_escape_or_fail_validation() {
 
 #[tokio::test]
 async fn skips_hidden_host_skills() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let visible_path = write_skill(
         &root,
@@ -385,7 +397,7 @@ async fn skips_hidden_host_skills() {
     );
     write_skill(&root, ".hidden", "name: hidden\ndescription: Hidden skill");
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
 
     assert_eq!(snapshot.errors, Vec::new());
     assert_eq!(snapshot.skills.len(), 1);
@@ -397,6 +409,7 @@ async fn skips_hidden_host_skills() {
 
 #[tokio::test]
 async fn discovers_nested_plugin_namespace_without_plugin_identity() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let plugin_manifest = root.path().join("nested/.codex-plugin/plugin.json");
     fs::create_dir_all(plugin_manifest.parent().expect("plugin manifest parent"))
@@ -408,7 +421,7 @@ async fn discovers_nested_plugin_namespace_without_plugin_identity() {
         "name: demo\ndescription: Demo skill",
     );
 
-    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User)).await;
+    let snapshot = load_host_skill_root(root_for(&root, SkillScope::User, &access)).await;
 
     assert_eq!(snapshot.errors, Vec::new());
     assert_eq!(
@@ -430,6 +443,7 @@ async fn discovers_nested_plugin_namespace_without_plugin_identity() {
 
 #[tokio::test]
 async fn plugin_root_accepts_maximum_length_qualified_skill_name() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let plugin_namespace = "p".repeat(MAX_NAME_LEN);
     let skill_name = "s".repeat(MAX_NAME_LEN);
@@ -451,7 +465,7 @@ async fn plugin_root_accepts_maximum_length_qualified_skill_name() {
             plugin_root,
             discovery_mode: SkillDiscoveryMode::Recursive,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -475,6 +489,7 @@ async fn plugin_root_accepts_maximum_length_qualified_skill_name() {
 
 #[tokio::test]
 async fn plugin_root_rejects_overlong_qualified_skill_name() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_name = "s".repeat(MAX_NAME_LEN);
     write_skill(
@@ -495,7 +510,7 @@ async fn plugin_root_rejects_overlong_qualified_skill_name() {
             plugin_root,
             discovery_mode: SkillDiscoveryMode::Recursive,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -510,6 +525,7 @@ async fn plugin_root_rejects_overlong_qualified_skill_name() {
 
 #[tokio::test]
 async fn recursive_plugin_root_preserves_owner_namespace_and_shared_asset_policy() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let skill_path = write_skill(
         &root,
@@ -545,7 +561,7 @@ async fn recursive_plugin_root_preserves_owner_namespace_and_shared_asset_policy
             plugin_root,
             discovery_mode: SkillDiscoveryMode::Recursive,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -582,6 +598,7 @@ async fn recursive_plugin_root_preserves_owner_namespace_and_shared_asset_policy
 
 #[tokio::test]
 async fn direct_child_plugin_root_ignores_nested_skills() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let direct_path = write_skill(
         &root,
@@ -606,7 +623,7 @@ async fn direct_child_plugin_root_ignores_nested_skills() {
             plugin_root,
             discovery_mode: SkillDiscoveryMode::DirectChildren,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -631,6 +648,7 @@ async fn direct_child_plugin_root_ignores_nested_skills() {
 #[cfg(unix)]
 #[tokio::test]
 async fn direct_child_plugin_root_skips_skills_resolving_outside_plugin_root() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let outside_root = TempDir::new().expect("outside temp dir");
     write_skill(
@@ -657,7 +675,7 @@ async fn direct_child_plugin_root_skips_skills_resolving_outside_plugin_root() {
             plugin_root,
             discovery_mode: SkillDiscoveryMode::DirectChildren,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -668,6 +686,7 @@ async fn direct_child_plugin_root_skips_skills_resolving_outside_plugin_root() {
 #[cfg(unix)]
 #[tokio::test]
 async fn recursive_plugin_root_preserves_symlinked_skill_discovery_path() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let root = TempDir::new().expect("temp dir");
     let target = TempDir::new().expect("target temp dir");
     let target_skill = write_skill(&target, "demo", "name: demo\ndescription: Symlinked skill");
@@ -687,7 +706,7 @@ async fn recursive_plugin_root_preserves_symlinked_skill_discovery_path() {
             plugin_root,
             discovery_mode: SkillDiscoveryMode::Recursive,
         },
-        Arc::clone(&LOCAL_FS),
+        &access,
     ))
     .await;
 
@@ -720,6 +739,7 @@ async fn recursive_plugin_root_preserves_symlinked_skill_discovery_path() {
 #[cfg(unix)]
 #[tokio::test]
 async fn follows_directory_symlinks_except_for_system_scope() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     use std::os::unix::fs::symlink;
 
     let root = TempDir::new().expect("temp dir");
@@ -728,7 +748,7 @@ async fn follows_directory_symlinks_except_for_system_scope() {
     symlink(target.path().join("demo"), root.path().join("alias")).expect("create symlink");
 
     for scope in [SkillScope::User, SkillScope::Repo, SkillScope::Admin] {
-        let snapshot = load_host_skill_root(root_for(&root, scope)).await;
+        let snapshot = load_host_skill_root(root_for(&root, scope, &access)).await;
 
         assert_eq!(snapshot.errors, Vec::new());
         assert_eq!(snapshot.skills.len(), 1);
@@ -749,7 +769,7 @@ async fn follows_directory_symlinks_except_for_system_scope() {
         );
     }
 
-    let system_snapshot = load_host_skill_root(root_for(&root, SkillScope::System)).await;
+    let system_snapshot = load_host_skill_root(root_for(&root, SkillScope::System, &access)).await;
     assert_eq!(system_snapshot.errors, Vec::new());
     assert_eq!(system_snapshot.skills, Vec::new());
 }
