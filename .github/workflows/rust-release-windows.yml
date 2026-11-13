@@ -11,12 +11,9 @@ on:
       - '**/*.rst'
       - '**/*.adoc'
       - '**/*.mmd'
+      - '.github/workflows/rust-release-linux.yml'
+      - '.github/workflows/rust-release-macos.yml'
   workflow_dispatch:
-    inputs:
-      verify_compiler_cache:
-        description: "Benchmark compiler caching with two builds; do not allocate a tag or publish a release"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -49,10 +46,8 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          BENCHMARK_ONLY: ${{ inputs.verify_compiler_cache }}
         run: |
-          args=()
-          if [[ "$BENCHMARK_ONLY" == "true" ]]; then args+=(--benchmark-only); fi
+          args=(--ignored-path .github/workflows/rust-release-linux.yml --ignored-path .github/workflows/rust-release-macos.yml)
           python3 .github/scripts/fork_release.py resolve --github-output "$GITHUB_OUTPUT" "${args[@]}"
 
   build:
@@ -70,8 +65,6 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_VERSION: fork-release-v1
       # Keep native compiler inputs visible when the dependency cache is keyed.
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
       TARGET: x86_64-pc-windows-msvc
@@ -108,8 +101,7 @@ jobs:
       - name: Fingerprint release build settings without the package version
         id: build_settings
         run: python .github/scripts/fork_release.py cache-key --github-output "$GITHUB_OUTPUT"
-      # Internal package identities stay 0.0.0. sccache retains workspace library
-      # compilations; the Cargo artifact cache keeps third-party dependencies.
+      # Internal package identities stay 0.0.0; the Cargo artifact cache keeps third-party dependencies.
       - name: Cache Cargo dependencies and compiled third-party crates
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -131,28 +123,13 @@ jobs:
             --tag "$RELEASE_TAG" --upstream-commit "$UPSTREAM_COMMIT" \
             --target "$TARGET" --package-dir "$GITHUB_WORKSPACE/upstream-package" \
             --env-file "$GITHUB_ENV"
-      - name: Set up the pinned Rust compiler cache
-        id: sccache
-        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: "v0.19.0"
       - name: Build the Codex CLI and standalone executor
         id: compile
         working-directory: codex-rs
-        env:
-          RUSTC_WRAPPER: sccache
         run: |
-          sccache --zero-stats
           cargo build --locked --release --timings \
             -p codex-cli -p codex-exec-server-cli \
             --bin codex --bin codex-exec-server --target "$TARGET"
-      - name: Record compiler cache statistics
-        if: always() && steps.sccache.outcome == 'success' && steps.compile.outcome != 'skipped'
-        working-directory: codex-rs
-        run: |
-          mkdir -p target
-          sccache --show-stats
-          sccache --show-stats --stats-format json > target/sccache-initial.json
       - name: Upload Cargo build timings
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -160,37 +137,7 @@ jobs:
           name: rust-build-timings-x86_64-pc-windows-msvc
           path: |
             codex-rs/target/cargo-timings/*.html
-            codex-rs/target/sccache-initial.json
             build-metrics/fork-source-preparation.json
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Measure compiler cache reuse without Cargo build artifacts
-        id: warm_compile
-        if: inputs.verify_compiler_cache
-        working-directory: codex-rs
-        env:
-          RUSTC_WRAPPER: sccache
-        run: |
-          cargo clean --release --target "$TARGET"
-          sccache --zero-stats
-          cargo build --locked --release --timings \
-            -p codex-cli -p codex-exec-server-cli \
-            --bin codex --bin codex-exec-server --target "$TARGET"
-      - name: Record warm compiler cache statistics
-        if: always() && steps.warm_compile.outcome != 'skipped' && steps.sccache.outcome == 'success'
-        working-directory: codex-rs
-        run: |
-          mkdir -p target
-          sccache --show-stats
-          sccache --show-stats --stats-format json > target/sccache-warm.json
-      - name: Upload warm build timings and compiler cache statistics
-        if: always() && steps.warm_compile.outcome != 'skipped'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: rust-warm-build-timings-x86_64-pc-windows-msvc
-          path: |
-            codex-rs/target/cargo-timings/*.html
-            codex-rs/target/sccache-warm.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Assemble the package with the fork CLI and executor

@@ -321,6 +321,61 @@ actionlint -oneline .github/workflows/rust-release.yml
 git diff --check
 ```
 
+## sccache removal and release channel change
+
+Updated on 2026-11-13; this supersedes the sccache sections above (the earlier
+investigation and implementation notes are kept as history).
+
+**sccache is gone** from all three workflows, along with the
+`verify_compiler_cache` manual benchmark and the `--benchmark-only` resolver
+option. Evidence from the last Linux and Windows runs before removal:
+
+- sccache's own statistics recorded zero requests in all seven inspected runs,
+  even though `RUSTC_WRAPPER=sccache` was set and the repository's Actions cache
+  held about 5,000 `sccache/` entries (5.9 GB). The cause of the zero statistics
+  was not determined.
+- Linux compiled the workspace crates (excluding the two executables) in 1-2
+  minutes when no code had changed, versus about 29 minutes after each upstream
+  merge (60+ crates changed), consistent with real hits only on unchanged code.
+  The same unchanged-code Windows run still recompiled 57 crates for over five
+  seconds each, so hits there were unreliable.
+- Upstream merges touch most workspace crates, so the benefit applies mainly to
+  reruns. The dominant cost, `codex-cli` (thin LTO and linking, 18-28 minutes on
+  Linux and 55-73 minutes on Windows), is rebuilt whenever any dependency changes
+  and cannot be reused from a compiler cache.
+- The sccache entries consumed 5.9 GB of the 10 GB repository cache quota, competing
+  with the roughly 1.3 GB `rust-cache` dependency caches. They were deleted by key
+  prefix (`sccache/`).
+
+A mtime-restoring scheme for `target/` was considered and not built: Cargo
+compares source mtimes with build outputs, and `prepare_fork_sources.py` rewrites
+the same 163 files (30 packages, including `codex-core`) on every fresh checkout,
+giving them new mtimes. Only a content-hash manifest applied after that script
+would work, and it helps reruns of the same commit, not upstream merges.
+
+**macOS builds each executable in its own matrix job** (`codex`, then
+`codex-exec-server`), as the upstream release workflow builds one bundle per job.
+Both share one `rust-cache` entry (`shared-key`), saved only by the `codex` job,
+and a `package` job assembles the signed executables and publishes. Linux and
+Windows were left as one job each: the build time is dominated by the single
+`codex-cli` unit, so splitting would not shorten the critical path.
+
+**Releases are prereleases.** Pushes create GitHub prereleases with
+`--latest=false`; nothing promotes them automatically (the previous
+all-three-platforms-present `latest` promotion and its ancestry check were
+removed). Promote one with
+`gh release edit <tag> --prerelease=false --latest`. `releases/latest`, which the
+standalone installers query for `latest`, keeps serving the previous stable
+release until then. The manual `publish_release` toggle that briefly existed was
+removed as unnecessary.
+
+**Sibling workflow edits do not trigger other platforms.** Each platform's
+`paths-ignore` lists the other two workflow files, and `fork_release.py resolve`
+takes repeatable `--ignored-path` so the supersession check agrees.
+
+None of this has been exercised on Actions; script behaviour is covered by
+`test_fork_release.py` (29 tests).
+
 ## Build-time version adaptation without upstream source churn
 
 Implemented on 2026-11-11 against `47864b7bb4` plus local changes. Scope: the
@@ -546,12 +601,14 @@ GitHub release publication succeeds.
 Keep `fork-release` as the integration branch. After upstream publishes a stable
 release, fetch its tags and merge the exact release tag. Commit local feature
 changes normally. Pushing this branch automatically allocates a fork version,
-creates its tag, builds the three platform packages, and publishes a stable
-GitHub Release. A push containing several commits releases the branch tip.
+creates its tag, builds the three platform packages, and publishes a GitHub
+**prerelease** (see [release channel](#sccache-removal-and-release-channel-change)).
+A push containing several commits releases the branch tip.
 No manual tag or Cargo version edit is needed. Pushes changing only `docs/**`
 or files ending in `.md`, `.mdx`, `.rst`, `.adoc`, or `.mmd` do not start the
-workflow. Mixed documentation/code pushes still release the branch tip;
-`workflow_dispatch` remains available regardless of changed paths. These are
+workflow, and a push changing only one platform's workflow file does not start
+the other two platforms' workflows. Mixed documentation/code pushes still release
+the branch tip; `workflow_dispatch` remains available regardless of changed paths. These are
 [GitHub path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore),
 so GitHub's documented diff limits also apply.
 
@@ -592,11 +649,15 @@ checks ancestry, and compares the trees excluding the same documentation paths.
 The active run is allowed to finish. With GitHub's default single pending slot,
 newer pushes can replace an older waiting run; this branch tracks the latest
 pushed state rather than promising a separate release for every intermediate
-push. See [workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+push. The supersession check also ignores the other two platforms' workflow
+files, matching their `paths-ignore` entries. See [workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 The same commit reuses an existing reserved tag, including a tag whose build
 failed or whose release is still a draft. If the commit has already been
 published under its generated tag, the build and release jobs are skipped.
 Existing numbered tags and published assets are not renamed or rewritten.
+
+To make a prerelease the stable channel, promote it by hand:
+`gh release edit <tag> --prerelease=false --latest`.
 
 To recover a failed run, use **Re-run failed jobs** on that Actions run while
 the commit is still current. **Run workflow** is also available on the default
@@ -1329,12 +1390,13 @@ different custom suffixes are different build identities from the authoritative
 GitHub `latest` endpoint. Hashes are not sorted lexically. Legacy numbered
 versions remain installable and compare numerically with one another; clients
 can migrate from them to a hash release without suggesting a return to an old
-numbered version. The publisher additionally uses GitHub's compare API and only
-promotes a candidate whose commit is ahead of or identical to the current
-`latest` commit. Older bases and behind/diverged commits cannot replace `latest`.
+numbered version. Since 2026-11-13 the publisher no longer promotes anything:
+it creates prereleases, so the ancestry check against `latest` (GitHub's compare
+API) that earlier versions ran is gone, and choosing what becomes `latest` is a
+manual step.
 CLI/server notices describe differing custom identities without claiming that
 one hash is older. GitHub's `draft` and `prerelease` flags determine the channel;
-the workflow publishes the fork release with `prerelease=false`.
+the workflow publishes the fork release with `prerelease=true`.
 
 SemVer imposes one edge case on the requested spelling: an eight-character hash
 containing only digits and starting with `0` would be an invalid numeric

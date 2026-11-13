@@ -110,7 +110,7 @@ class ForkReleaseTests(unittest.TestCase):
             "fork_release.github_json", side_effect=[{"object": {"sha": head}}, None, {}]
         ), patch("fork_release.run") as run, patch("fork_release.only_documentation_changed", return_value=True) as changed:
             self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
-        changed.assert_called_once_with(commit, head)
+        changed.assert_called_once_with(commit, head, ignored_paths=())
         self.assertEqual(run.call_args.args[-1], head)
 
     def test_documentation_filter_uses_real_git_diffs_and_preserves_code_changes(self):
@@ -136,6 +136,12 @@ class ForkReleaseTests(unittest.TestCase):
             code = commit()
             self.assertFalse(release.only_documentation_changed(base, code, cwd=root))
             self.assertFalse(release.only_documentation_changed(docs, code, cwd=root))
+            sibling = ".github/workflows/rust-release-linux.yml"
+            (root / sibling).parent.mkdir(parents=True)
+            (root / sibling).write_text("name: sibling\n")
+            workflow = commit()
+            self.assertFalse(release.only_documentation_changed(code, workflow, cwd=root))
+            self.assertTrue(release.only_documentation_changed(code, workflow, ignored_paths=(sibling,), cwd=root))
 
     def test_suffix_validation_does_not_restrict_names_or_lengths(self):
         for suffix in ["fork.5d0840ed", "fork.a", "fork." + "a" * 40, "custom-build.abc123", "rc.1", "alpha.1.2.3"]:
@@ -167,27 +173,6 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertEqual(values["upstream_commit"], upstream)
             self.assertEqual(values["should_publish"], "true")
             self.assertEqual(values["should_build"], "true")
-
-    def test_cache_benchmark_builds_published_commits_without_allocating_a_tag(self):
-        commit, upstream = "b" * 40, "a" * 40
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            output = root / "outputs"
-            (root / "codex-rs").mkdir()
-            (root / "codex-rs/Cargo.toml").write_text('[workspace.package]\nversion = "0.167.0"\n')
-            (root / "codex-rs/rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.95.0"\n')
-            with patch("fork_release.ROOT", root), patch("fork_release.github_json", return_value={
-                "tag_name": "rust-v0.167.0", "draft": False, "prerelease": False,
-            }) as api, patch("fork_release.run", side_effect=["", upstream, "", commit]), patch(
-                "fork_release.automatic_tag"
-            ) as allocate:
-                release.resolve(None, output, benchmark_only=True)
-            allocate.assert_not_called()
-            api.assert_called_once_with("repos/openai/codex/releases/tags/rust-v0.167.0")
-            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-            self.assertEqual(values["tag"], "rust-v0.167.0-fork.bbbbbbbb")
-            self.assertEqual(values["should_build"], "true")
-            self.assertEqual(values["should_publish"], "false")
 
     def test_resolve_requires_a_stable_upstream_base_before_build_normalization(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -450,6 +435,7 @@ class ForkReleaseTests(unittest.TestCase):
             _, publication = self.publish("rust-v0.167.0-fork.bbbbbbbb", directory, [None, self.assets(mac), self.assets(mac)])
             self.assertEqual([args[2] for args in publication], ["create", "upload", "upload"])
             self.assertNotIn("--draft", publication[0])
+            self.assertIn("--prerelease", publication[0])
             self.assertIn("--latest=false", publication[0])
             self.assertNotIn("config-schema.json", " ".join(publication[1]))
             self.assertEqual((directory / "codex-package_SHA256SUMS").read_text().splitlines(), [
@@ -477,7 +463,7 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertEqual([args[2] for args in publication].count("upload"), 3)
             self.assertEqual(len((directory / "codex-package_SHA256SUMS").read_text().splitlines()), 2)
 
-    def test_draft_release_from_an_earlier_run_is_published_without_latest(self):
+    def test_draft_release_from_an_earlier_run_is_published_as_a_prerelease(self):
         linux = release.TARGETS[0]
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -487,45 +473,16 @@ class ForkReleaseTests(unittest.TestCase):
             )
             self.assertEqual(publication[0][2], "edit")
             self.assertIn("--draft=false", publication[0])
+            self.assertIn("--prerelease=true", publication[0])
             self.assertIn("--latest=false", publication[0])
 
-    def test_latest_is_promoted_only_after_all_platform_packages_exist(self):
+    def test_a_complete_release_is_never_promoted_to_latest_automatically(self):
         every = self.assets(*release.TARGETS)
-        for assets, promoted in [(self.assets(*release.TARGETS[:2]), False), (every, True)]:
-            with self.subTest(complete=promoted), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                self.make_archives(directory, [release.TARGETS[0]])
-                responses = [{"draft": False}, assets, assets] + ([None] if promoted else [])
-                _, publication = self.publish("rust-v0.167.0-fork.bbbbbbbb", directory, responses)
-                edits = [args for args in publication if args[2] == "edit"]
-                self.assertEqual(len(edits), int(promoted))
-                if promoted:
-                    self.assertIn("--latest=true", edits[0])
-
-    def test_latest_promotion_uses_ancestry_instead_of_suffix_order(self):
-        every = self.assets(*release.TARGETS)
-        for status, expected in [("ahead", True), ("identical", True), ("behind", False), ("diverged", False)]:
-            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                self.make_archives(directory, [release.TARGETS[0]])
-                latest = {"tag_name": "rust-v0.167.0-fork.aaaaaaaa", "draft": False, "prerelease": False}
-                api, publication = self.publish(
-                    "rust-v0.167.0-fork.bbbbbbbb", directory, [{"draft": False}, every, every, latest, {"status": status}],
-                )
-                self.assertEqual(api.call_args_list[-1].args[0], "repos/ayanamist/codex/compare/rust-v0.167.0-fork.aaaaaaaa..." + "b" * 40)
-                self.assertEqual(any(args[2] == "edit" and "--latest=true" in args for args in publication), expected)
-
-    def test_latest_promotion_from_numbered_release_and_custom_suffix(self):
-        every = self.assets(*release.TARGETS)
-        for previous in ["0.167.0-ayanamist.2", "0.167.0-custom-build.ABC123"]:
-            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                self.make_archives(directory, [release.TARGETS[0]])
-                latest = {"tag_name": "rust-v" + previous, "draft": False, "prerelease": False}
-                _, publication = self.publish(
-                    "rust-v0.167.0-fork.bbbbbbbb", directory, [{"draft": False}, every, every, latest, {"status": "ahead"}],
-                )
-                self.assertTrue(any(args[2] == "edit" and "--latest=true" in args for args in publication))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.make_archives(directory, [release.TARGETS[0]])
+            _, publication = self.publish("rust-v0.167.0-fork.bbbbbbbb", directory, [{"draft": False}, every, every])
+            self.assertEqual([args for args in publication if args[2] == "edit"], [])
 
     def test_github_release_metadata_determines_the_stable_channel(self):
         self.assertTrue(should_make_latest("0.167.0-custom-build.ABC123", {

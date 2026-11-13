@@ -15,20 +15,21 @@ workflow, so a change to common steps must be applied to all three. A failing
 platform no longer cancels or blocks the others, and each can be re-run alone
 so successful platforms still save their caches. Each build workflow serializes
 per target. All three resolve the same deterministic tag, and a tag created first
-by a sibling is accepted. The first platform to finish creates the release as
-non-latest (its notes never change); every platform then uploads its own package
-with `--clobber` plus the installers, and rewrites `codex-package_SHA256SUMS` from
-the release's asset digests until the archive set is stable. Whichever platform
-finds all three packages present marks the release `latest`, after the ancestry
-check below; until then `releases/latest` still serves the previous release.
-Re-running a failed platform fills in its package and completes the promotion.
+by a sibling is accepted. The first platform to finish creates the release as a
+prerelease and non-latest (its notes never change); every platform then uploads
+its own package with `--clobber` plus the installers, and rewrites
+`codex-package_SHA256SUMS` from the release's asset digests until the archive set
+is stable. Nothing promotes a release automatically: `releases/latest` keeps
+serving the previous stable release until you run
+`gh release edit <tag> --prerelease=false --latest`. Re-running a failed platform
+fills in its package.
 
 Pushing to `fork-release`
 automatically selects a tag such as `rust-v0.167.0-fork.5d0840ed`, builds the
 fork's `codex` entrypoint for Linux GNU/glibc x64, macOS ARM64, and Windows x64,
-and publishes a stable release. Manual tag creation is unnecessary. A manual
+and publishes a prerelease. Manual tag creation is unnecessary. A manual
 `workflow_dispatch` on `fork-release` of any platform workflow provides a recovery
-entry point.
+entry point; it always publishes.
 
 The suffix contains the first eight source commit characters, with the full SHA
 retained in package metadata and linked release notes. A retry reuses the tag already
@@ -38,9 +39,11 @@ release. The workflow serializes allocation through publication and passes
 the selected tag to its later jobs directly, using the built-in `GITHUB_TOKEN`.
 
 Pushes changing only `docs/**` or `.md`, `.mdx`, `.rst`, `.adoc`, and `.mmd` files
-are ignored. A push that also changes code still runs; manual dispatch remains
-available. The resolver uses the same path exclusions when deciding whether a
-newer branch head has superseded a queued code release.
+are ignored, as are changes to the other two platforms' workflow files, so editing
+one platform's YAML does not trigger the other two. A push that also changes code
+still runs every platform; manual dispatch remains available. The resolver uses
+the same exclusions (`--ignored-path` for the sibling workflows) when deciding
+whether a newer branch head has superseded a queued code release.
 
 The workflow verifies that the corresponding `openai/codex` stable release
 exists and its tag commit is an ancestor of the fork commit. It downloads each
@@ -49,8 +52,11 @@ voice resource inventory, and upstream voice commit before building. It uses
 that package's bwrap digest when compiling Linux Codex and passes the upstream
 voice commit separately from the actual fork build commit.
 
-`codex-cli --bin codex` and `codex-exec-server-cli --bin codex-exec-server` are
-built together, then both replace their upstream counterparts in the package.
+`codex-cli --bin codex` and `codex-exec-server-cli --bin codex-exec-server` both
+replace their upstream counterparts in the package. Linux and Windows build them
+in one `cargo build`. macOS builds each in its own matrix job (sharing one
+rust-cache, saved by the `codex` job), uploads the signed executables as
+one-day artifacts, and a `package` job assembles and publishes them.
 The packaged binaries must both report the fork version. Code-mode host, voice
 helper/runtime, ripgrep, and platform sandbox helpers are reused from the pinned
 upstream package, with unchanged file contents verified. V8, lint tools, and
@@ -80,14 +86,10 @@ separate `rust-build-timings-*` artifacts for seven days, outside the release's
 compression. See the [diagnosis, baseline, and cache limits](../../docs/fork/release-management.md#windows-dependency-checkout-and-build-caching).
 Updated on 2026-11-11: the explicit cache-key fingerprint covers root build
 settings rather than the entire root manifest, allowing reuse across version
-changes. Rust builds also use the official sccache action pinned to v0.0.11's
-commit and sccache v0.19.0 with the GHA backend. Initial hit/miss/non-cacheable
-JSON statistics accompany the timing artifact. On manual dispatch,
-`verify_compiler_cache=true` builds without allocating a tag or publishing a
-release, then cleans Cargo release artifacts and builds again to measure
-sccache reuse. The warm metrics use a separate `rust-warm-build-timings-*`
-artifact; normal releases still build once. See the
-[implementation, upstream version distinction, and remote probe](../../docs/fork/release-management.md#build-time-version-adaptation-without-upstream-source-churn).
+changes. sccache and the `verify_compiler_cache` benchmark were removed on
+2026-11-13: its own statistics never recorded a request, and merged upstream
+releases change most workspace crates anyway. See the
+[removal rationale](../../docs/fork/release-management.md#sccache-removal-and-release-channel-change).
 macOS ARM64 has a 300-minute timeout after run `43135737205` exceeded its
 three-hour limit; Linux and Windows retain 180 minutes. See the
 [macOS timeout evidence](../../docs/fork/release-management.md#macos-arm64-timeout-run-43135737205).
@@ -124,11 +126,9 @@ remain supported. GitHub Release flags determine the stable channel. See
 procedure, metadata contract, source evidence, and verification commands.
 
 The release publishes three `codex-package-<target>.tar.gz` files,
-`codex-package_SHA256SUMS`, and the fork's `install.sh` and `install.ps1`. A
-release becomes `latest` only once all three packages exist; an older upstream
-base cannot replace a newer `latest`, and GitHub commit comparison prevents a
-behind or diverged source commit from replacing it. Hashes are never ordered
-lexically. Re-running a platform overwrites its own assets.
+`codex-package_SHA256SUMS`, and the fork's `install.sh` and `install.ps1`. It is
+a prerelease until you promote it manually, so the installers' `latest` lookup
+does not see it. Re-running a platform overwrites its own assets.
 
 The new macOS CLI and executor use ad hoc signatures; their Windows equivalents
 are not Authenticode signed. Reused upstream binary signatures are preserved. No

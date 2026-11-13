@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 import tomllib
 
-from releases import is_valid_release_version, should_make_latest
+from releases import is_valid_release_version
 
 ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = "openai/codex"
@@ -103,24 +103,24 @@ def verify_tag_commit(tag: str, commit: str) -> None:
         raise ValueError("Fork tag hash does not match the source commit")
 
 
-def only_documentation_changed(commit: str, head: str, *, cwd: Path = ROOT) -> bool:
+def only_documentation_changed(commit: str, head: str, *, ignored_paths: tuple[str, ...] = (), cwd: Path = ROOT) -> bool:
     try:
         run("git", "merge-base", "--is-ancestor", commit, head, cwd=cwd)
     except subprocess.CalledProcessError:
         return False
     changed = run("git", "diff", "--name-only", commit, head, "--", ".",
-                  *(f":(exclude,glob){pattern}" for pattern in DOCUMENTATION_GLOBS), cwd=cwd)
+                  *(f":(exclude,glob){pattern}" for pattern in (*DOCUMENTATION_GLOBS, *ignored_paths)), cwd=cwd)
     return not changed
 
 
-def automatic_tag(base: str, commit: str) -> tuple[str, bool]:
+def automatic_tag(base: str, commit: str, ignored_paths: tuple[str, ...] = ()) -> tuple[str, bool]:
     """Reserve a deterministic commit tag under the workflow's publication lock."""
     repository = os.environ["GITHUB_REPOSITORY"]
     head = github_json(f"repos/{repository}/git/ref/heads/fork-release")
     head_commit = head["object"]["sha"]
     if head_commit != commit:
         run("git", "fetch", "--no-tags", f"https://github.com/{repository}.git", head_commit)
-        if not only_documentation_changed(commit, head_commit):
+        if not only_documentation_changed(commit, head_commit, ignored_paths=ignored_paths):
             print("This commit has been superseded on fork-release; skipping publication")
             return "", False
     tag = commit_tag(base, commit)
@@ -143,7 +143,7 @@ def automatic_tag(base: str, commit: str) -> tuple[str, bool]:
     return tag, True
 
 
-def resolve(tag: str | None, output: Path, *, benchmark_only: bool = False) -> None:
+def resolve(tag: str | None, output: Path, *, ignored_paths: tuple[str, ...] = ()) -> None:
     workspace = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())
     base = workspace["workspace"]["package"]["version"]
     if not is_valid_release_version(base) or "-" in base or base == "0.0.0":
@@ -164,20 +164,16 @@ def resolve(tag: str | None, output: Path, *, benchmark_only: bool = False) -> N
     fork_commit = run("git", "rev-parse", "HEAD")
     if tag is not None:
         verify_tag_commit(tag, fork_commit)
-    should_publish = not benchmark_only
-    if benchmark_only:
-        # A manual cache measurement must also work for an already published
-        # commit, without reserving a tag or modifying GitHub Releases.
-        tag = commit_tag(base, fork_commit)
-    elif tag is None:
-        tag, should_publish = automatic_tag(base, fork_commit)
+    should_publish = True
+    if tag is None:
+        tag, should_publish = automatic_tag(base, fork_commit, ignored_paths)
     if not tag:
         emit(output, {"should_publish": "false", "should_build": "false"})
         return
     _, version = parse_tag(tag)
     emit(output, {
         "tag": tag, "should_publish": str(should_publish).lower(),
-        "should_build": str(should_publish or benchmark_only).lower(),
+        "should_build": str(should_publish).lower(),
         "version": version, "upstream_tag": upstream_tag,
         "upstream_commit": upstream_commit, "fork_commit": fork_commit,
         "rust_toolchain": tomllib.loads((ROOT / "codex-rs/rust-toolchain.toml").read_text())["toolchain"]["channel"],
@@ -394,13 +390,13 @@ def publish(tag: str, directory: Path) -> None:
         write_release_notes(notes, tag, version, commit, repository)
         if existing is None:
             try:
-                run("gh", "release", "create", tag, "--repo", repository, "--verify-tag", "--latest=false", "--title", version, "--notes-file", str(notes))
+                run("gh", "release", "create", tag, "--repo", repository, "--verify-tag", "--prerelease", "--latest=false", "--title", version, "--notes-file", str(notes))
             except subprocess.CalledProcessError:
                 # A sibling platform workflow may have created the release first.
                 if github_json(f"repos/{repository}/releases/tags/{tag}", missing_ok=True) is None:
                     raise
         else:
-            run("gh", "release", "edit", tag, "--repo", repository, "--draft=false", "--prerelease=false", "--latest=false")
+            run("gh", "release", "edit", tag, "--repo", repository, "--draft=false", "--prerelease=true", "--latest=false")
     fixed = [directory / name for name in ["install.sh", "install.ps1"]]
     run("gh", "release", "upload", tag, "--repo", repository, "--clobber", *(str(path) for path in archives + fixed))
     # Sibling uploads may race with this one; rewrite the checksums until the archive set is stable.
@@ -416,20 +412,7 @@ def publish(tag: str, directory: Path) -> None:
         published = sums.keys()
     else:
         raise RuntimeError("Release assets kept changing while writing checksums")
-    # Only a complete release may become latest; this edit is idempotent across siblings.
-    if len(sums) == len(TARGETS) and latest_after_publication(repository, tag, version, commit):
-        run("gh", "release", "edit", tag, "--repo", repository, "--latest=true")
-
-
-def latest_after_publication(repository: str, tag: str, version: str, commit: str) -> bool:
-    latest = github_json(f"repos/{repository}/releases/latest", missing_ok=True)
-    make_latest = latest is None or should_make_latest(version, latest)
-    if latest is not None and make_latest and latest["tag_name"] != tag:
-        comparison = github_json(f"repos/{repository}/compare/{latest['tag_name']}...{commit}")
-        if comparison["status"] not in {"ahead", "identical", "behind", "diverged"}:
-            raise ValueError("Cannot determine release commit ancestry")
-        make_latest = comparison["status"] in {"ahead", "identical"}
-    return make_latest
+    # Releases stay prereleases; promote one manually with `gh release edit --prerelease=false --latest`.
 
 
 def write_release_notes(notes: Path, tag: str, version: str, commit: str, repository: str) -> None:
@@ -454,7 +437,7 @@ def main() -> None:
     resolve_parser = commands.add_parser("resolve")
     resolve_parser.add_argument("--tag", help="Explicit tag; otherwise allocate or resume a release for this commit.")
     resolve_parser.add_argument("--github-output", required=True, type=Path)
-    resolve_parser.add_argument("--benchmark-only", action="store_true", help="Build without allocating a tag or publishing a release.")
+    resolve_parser.add_argument("--ignored-path", action="append", default=[], help="Path whose changes never supersede a queued release; repeatable.")
     cache_parser = commands.add_parser("cache-key", help="Fingerprint virtual-root build settings before release stamping.")
     cache_parser.add_argument("--github-output", required=True, type=Path)
     prepare_parser = commands.add_parser("prepare")
@@ -473,7 +456,7 @@ def main() -> None:
     publish_parser.add_argument("--directory", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "resolve":
-        resolve(args.tag, args.github_output, benchmark_only=args.benchmark_only)
+        resolve(args.tag, args.github_output, ignored_paths=tuple(args.ignored_path))
     elif args.command == "cache-key":
         manifest = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())
         emit(args.github_output, {"build_settings_hash": build_cache_settings_hash(manifest)})

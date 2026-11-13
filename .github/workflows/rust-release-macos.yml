@@ -11,12 +11,9 @@ on:
       - '**/*.rst'
       - '**/*.adoc'
       - '**/*.mmd'
+      - '.github/workflows/rust-release-linux.yml'
+      - '.github/workflows/rust-release-windows.yml'
   workflow_dispatch:
-    inputs:
-      verify_compiler_cache:
-        description: "Benchmark compiler caching with two builds; do not allocate a tag or publish a release"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -49,21 +46,27 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          BENCHMARK_ONLY: ${{ inputs.verify_compiler_cache }}
         run: |
-          args=()
-          if [[ "$BENCHMARK_ONLY" == "true" ]]; then args+=(--benchmark-only); fi
+          args=(--ignored-path .github/workflows/rust-release-linux.yml --ignored-path .github/workflows/rust-release-windows.yml)
           python3 .github/scripts/fork_release.py resolve --github-output "$GITHUB_OUTPUT" "${args[@]}"
 
   build:
     needs: resolve
     if: needs.resolve.outputs.should_build == 'true'
-    name: Build codex - aarch64-apple-darwin
+    name: Build ${{ matrix.binary }} - aarch64-apple-darwin
     runs-on: macos-15
     # Run 43135737205 exceeded three hours; allow cold builds and cache saving.
     timeout-minutes: 300
     permissions:
-      contents: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary: codex
+            package: codex-cli
+          - binary: codex-exec-server
+            package: codex-exec-server-cli
     defaults:
       run:
         shell: bash
@@ -71,8 +74,6 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_VERSION: fork-release-v1
       # Keep native compiler inputs visible when the dependency cache is keyed.
       TARGET: aarch64-apple-darwin
     steps:
@@ -96,18 +97,20 @@ jobs:
       - name: Fingerprint release build settings without the package version
         id: build_settings
         run: python .github/scripts/fork_release.py cache-key --github-output "$GITHUB_OUTPUT"
-      # Internal package identities stay 0.0.0. sccache retains workspace library
-      # compilations; the Cargo artifact cache keeps third-party dependencies.
+      # Internal package identities stay 0.0.0; the Cargo artifact cache keeps third-party dependencies.
       - name: Cache Cargo dependencies and compiled third-party crates
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: fork-release-v2
           # Keep profiles/patches isolated while allowing fallback across version
           # and dependency updates. rust-cache fingerprints dependencies itself.
-          key: macos-15-aarch64-apple-darwin-${{ steps.build_settings.outputs.build_settings_hash }}
+          # shared-key omits the per-job suffix so both matrix jobs use one cache.
+          shared-key: macos-15-aarch64-apple-darwin-${{ steps.build_settings.outputs.build_settings_hash }}
           workspaces: codex-rs -> target
           cache-bin: "false"
           cache-workspace-crates: "false"
+          # codex-cli's dependencies are a superset of the executor's, so only it saves.
+          save-if: ${{ matrix.binary == 'codex' }}
       - name: Download and verify the upstream package; export executable release identity
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,81 +121,76 @@ jobs:
             --tag "$RELEASE_TAG" --upstream-commit "$UPSTREAM_COMMIT" \
             --target "$TARGET" --package-dir "$GITHUB_WORKSPACE/upstream-package" \
             --env-file "$GITHUB_ENV"
-      - name: Set up the pinned Rust compiler cache
-        id: sccache
-        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: "v0.19.0"
-      - name: Build the Codex CLI and standalone executor
-        id: compile
+      - name: Build the fork executable
         working-directory: codex-rs
-        env:
-          RUSTC_WRAPPER: sccache
         run: |
-          sccache --zero-stats
           cargo build --locked --release --timings \
-            -p codex-cli -p codex-exec-server-cli \
-            --bin codex --bin codex-exec-server --target "$TARGET"
-      - name: Record compiler cache statistics
-        if: always() && steps.sccache.outcome == 'success' && steps.compile.outcome != 'skipped'
-        working-directory: codex-rs
-        run: |
-          mkdir -p target
-          sccache --show-stats
-          sccache --show-stats --stats-format json > target/sccache-initial.json
+            -p ${{ matrix.package }} --bin ${{ matrix.binary }} --target "$TARGET"
       - name: Upload Cargo build timings
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rust-build-timings-aarch64-apple-darwin
+          name: rust-build-timings-${{ matrix.binary }}-aarch64-apple-darwin
           path: |
             codex-rs/target/cargo-timings/*.html
-            codex-rs/target/sccache-initial.json
             build-metrics/fork-source-preparation.json
           if-no-files-found: ignore
           retention-days: 7
-      - name: Measure compiler cache reuse without Cargo build artifacts
-        id: warm_compile
-        if: inputs.verify_compiler_cache
-        working-directory: codex-rs
-        env:
-          RUSTC_WRAPPER: sccache
+      - name: Strip and sign the fork executable
         run: |
-          cargo clean --release --target "$TARGET"
-          sccache --zero-stats
-          cargo build --locked --release --timings \
-            -p codex-cli -p codex-exec-server-cli \
-            --bin codex --bin codex-exec-server --target "$TARGET"
-      - name: Record warm compiler cache statistics
-        if: always() && steps.warm_compile.outcome != 'skipped' && steps.sccache.outcome == 'success'
-        working-directory: codex-rs
-        run: |
-          mkdir -p target
-          sccache --show-stats
-          sccache --show-stats --stats-format json > target/sccache-warm.json
-      - name: Upload warm build timings and compiler cache statistics
-        if: always() && steps.warm_compile.outcome != 'skipped'
+          binary="codex-rs/target/$TARGET/release/${{ matrix.binary }}"
+          strip -S -x "$binary"
+          codesign --force --sign - "$binary"
+      - name: Upload the fork executable
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rust-warm-build-timings-aarch64-apple-darwin
-          path: |
-            codex-rs/target/cargo-timings/*.html
-            codex-rs/target/sccache-warm.json
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Strip and sign the fork executables
+          name: fork-binary-${{ matrix.binary }}
+          path: codex-rs/target/aarch64-apple-darwin/release/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.should_build == 'true'
+    name: Package codex - aarch64-apple-darwin
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.resolve.outputs.fork_commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fork-binary-*
+          merge-multiple: true
+          path: fork-binaries
+      - name: Download and verify the upstream package; export executable release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.resolve.outputs.upstream_commit }}
         run: |
-          for name in codex codex-exec-server; do
-            binary="codex-rs/target/$TARGET/release/$name"
-            strip -S -x "$binary"
-            codesign --force --sign - "$binary"
-          done
+          python .github/scripts/fork_release.py prepare \
+            --tag "$RELEASE_TAG" --upstream-commit "$UPSTREAM_COMMIT" \
+            --target "$TARGET" --package-dir "$GITHUB_WORKSPACE/upstream-package" \
+            --env-file "$GITHUB_ENV"
       - name: Assemble the package with the fork CLI and executor
         run: |
           python .github/scripts/fork_release.py assemble \
             --package-dir "$GITHUB_WORKSPACE/upstream-package" \
-            --binary "codex-rs/target/$TARGET/release/codex" \
-            --exec-server-binary "codex-rs/target/$TARGET/release/codex-exec-server" \
+            --binary fork-binaries/codex \
+            --exec-server-binary fork-binaries/codex-exec-server \
             --output-dir dist
       - name: Check the packaged CLI, executor, and voice helper identities
         run: |
