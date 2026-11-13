@@ -68,7 +68,7 @@ jobs:
       run:
         shell: bash
     env:
-      CARGO_BUILD_JOBS: "3"
+      CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       SCCACHE_GHA_ENABLED: "true"
