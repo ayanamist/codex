@@ -501,11 +501,11 @@ class ForkReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "No platform package"):
             release.publish("rust-v0.167.0-fork.bbbbbbbb", Path(temporary))
 
-    def publish(self, tag, directory, responses):
+    def publish(self, tag, directory, responses, *, promote_when_ready=False):
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", side_effect=responses
         ) as api, patch("fork_release.run", return_value="b" * 40) as run:
-            release.publish(tag, directory)
+            release.publish(tag, directory, promote_when_ready=promote_when_ready)
         return api, [call.args for call in run.call_args_list if call.args[:2] == ("gh", "release")]
 
     def test_first_platform_creates_a_non_latest_release_and_later_ones_only_add_files(self):
@@ -580,13 +580,84 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertIn("--prerelease=true", publication[0])
             self.assertIn("--latest=false", publication[0])
 
-    def test_a_complete_release_is_never_promoted_to_latest_automatically(self):
+    def test_macos_upload_does_not_change_the_stable_channel(self):
         every = self.assets(*release.TARGETS)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            self.make_archives(directory, [release.TARGETS[0]])
+            self.make_archives(directory, [release.TARGETS[1]])
             _, publication = self.publish("rust-v0.167.0-fork.bbbbbbbb", directory, [{"draft": False}, every, every])
             self.assertEqual([args for args in publication if args[2] == "edit"], [])
+
+    def test_linux_and_windows_promote_the_same_tag_in_either_order_without_macos(self):
+        tag = "rust-v0.167.0-fork.bbbbbbbb"
+        linux, windows = release.LATEST_TARGETS
+        for first, second in ((linux, windows), (windows, linux)):
+            with self.subTest(first=first), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.make_archives(directory, [first])
+                _, publication = self.publish(
+                    tag, directory, [None, self.assets(first), self.assets(first)], promote_when_ready=True,
+                )
+                self.assertIn("--prerelease", publication[0])
+                self.assertIn("--latest=false", publication[0])
+                self.assertFalse(any(args[2] == "edit" for args in publication))
+                for archive in directory.glob("codex-package-*.tar.gz"):
+                    archive.unlink()
+                self.make_archives(directory, [second])
+                _, publication = self.publish(
+                    tag, directory, [{"draft": False}, self.assets(first, second), self.assets(first, second)],
+                    promote_when_ready=True,
+                )
+                self.assertEqual(publication[-1], (
+                    "gh", "release", "edit", tag, "--repo", "ayanamist/codex", "--prerelease=false", "--latest",
+                ))
+                self.assertEqual(publication[-2][2], "upload")
+                self.assertTrue(publication[-2][-1].endswith("codex-package_SHA256SUMS"))
+
+    def test_promotion_requires_both_linux_and_windows_even_when_macos_is_present(self):
+        mac = release.TARGETS[1]
+        for target in release.LATEST_TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.make_archives(directory, [target])
+                _, publication = self.publish(
+                    "rust-v0.167.0-fork.bbbbbbbb", directory,
+                    [{"draft": False}, self.assets(target, mac), self.assets(target, mac)],
+                    promote_when_ready=True,
+                )
+                self.assertFalse(any(args[2] == "edit" for args in publication))
+
+    def test_promotion_observes_a_concurrent_sibling_upload_and_can_be_retried(self):
+        linux, windows = release.LATEST_TARGETS
+        both = self.assets(linux, windows)
+        for snapshots in ([self.assets(linux), both, both], [both, both]):
+            with self.subTest(snapshots=snapshots), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.make_archives(directory, [linux])
+                _, publication = self.publish(
+                    "rust-v0.167.0-fork.bbbbbbbb", directory, [{"draft": False}, *snapshots],
+                    promote_when_ready=True,
+                )
+                self.assertEqual(publication[-1][2], "edit")
+                self.assertIn("--prerelease=false", publication[-1])
+                self.assertIn("--latest", publication[-1])
+                self.assertEqual(len((directory / "codex-package_SHA256SUMS").read_text().splitlines()), 2)
+
+    def test_checksum_upload_failure_prevents_promotion(self):
+        def run(*args):
+            if args[:3] == ("gh", "release", "upload") and args[-1].endswith("codex-package_SHA256SUMS"):
+                raise subprocess.CalledProcessError(1, args)
+            return "b" * 40
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.make_archives(directory, [release.LATEST_TARGETS[0]])
+            with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
+                "fork_release.github_json", side_effect=[{"draft": False}, self.assets(*release.LATEST_TARGETS)],
+            ), patch("fork_release.run", side_effect=run) as commands:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    release.publish("rust-v0.167.0-fork.bbbbbbbb", directory, promote_when_ready=True)
+            self.assertFalse(any(call.args[:3] == ("gh", "release", "edit") for call in commands.call_args_list))
 
     def test_github_release_metadata_determines_the_stable_channel(self):
         self.assertTrue(should_make_latest("0.167.0-custom-build.ABC123", {

@@ -170,9 +170,9 @@ jobs:
           [[ "$voice_commit" == "$CODEX_VOICE_HELPER_COMMIT" ]]
       - name: Check all packaged ELF imports against glibc 2.38
         run: python .github/scripts/check_linux_glibc.py upstream-package
-      - name: Add this platform's package to the release
+      - name: Publish the package and promote the release when Linux and Windows are ready
         if: needs.resolve.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
-        run: python .github/scripts/fork_release.py publish --tag "$RELEASE_TAG" --directory dist
+        run: python .github/scripts/fork_release.py publish --tag "$RELEASE_TAG" --directory dist --promote-when-ready

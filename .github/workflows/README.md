@@ -1,6 +1,6 @@
 # Fork 发布工作流
 
-范围：`ayanamist/codex`；核对日期：2026-11-16；工作区版本：`0.169.0`。
+范围：`ayanamist/codex`；核对日期：2026-11-18；工作区版本：`0.170.0`。
 关键词：GitHub Actions、release、workflow_dispatch、latest、三平台。
 
 | 平台 | 工作流 |
@@ -20,15 +20,14 @@ Linux 和 Windows 在同一构建中生成 CLI 和 executor。
 macOS 通过两个 matrix job 分别构建，两者共享 rust-cache，由 CLI job 保存缓存；
 签名后的可执行文件作为一天有效的 artifact 传给 package job，由它统一打包发布。
 
-各平台独立上传相同 tag 的资产。发布保持 prerelease，单个平台失败时可以补跑。
-三个包齐全后仍需维护者手动确认并晋升稳定版：
+各平台独立上传相同 tag 的资产，首个平台创建 prerelease。
+Linux 和 Windows 在构建、打包和检查通过后的发布步骤传入 `--promote-when-ready`：
+同一 tag 的两个平台包均存在、共享校验清单成功上传且包集合稳定后，自动移除 prerelease
+并设为 `latest`。就绪依据是对应 release 的包资产，不需要等待 macOS；
+macOS 随后独立补包并更新校验清单，不修改稳定通道。
 
-```sh
-gh release edit TAG --repo ayanamist/codex --prerelease=false --latest
-```
-
-将 `TAG` 替换成已检查的发布 tag。自动流程不会晋升 `latest`，
-默认安装器继续使用此前的稳定版；预发布版本可以显式指定安装。
+缺少 Linux 或 Windows 包时保持 prerelease；失败平台补跑成功后可完成晋升。
+默认安装器在晋升后使用新稳定版；晋升前仍可显式指定预发布版本安装。
 
 版本、上游包校验、helper 复用、缓存和验证入口见
 [构建与发布维护参考](../../docs/fork/release-management.md)。

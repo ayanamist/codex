@@ -157,9 +157,9 @@ jobs:
           [[ "$executor_version" == "codex-exec-server $FORK_VERSION" ]]
           voice_commit="$("upstream-package/codex-resources/voice/bin/codex-voice-host$suffix" --build-commit)"
           [[ "$voice_commit" == "$CODEX_VOICE_HELPER_COMMIT" ]]
-      - name: Add this platform's package to the release
+      - name: Publish the package and promote the release when Linux and Windows are ready
         if: needs.resolve.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
-        run: python .github/scripts/fork_release.py publish --tag "$RELEASE_TAG" --directory dist
+        run: python .github/scripts/fork_release.py publish --tag "$RELEASE_TAG" --directory dist --promote-when-ready

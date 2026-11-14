@@ -1,8 +1,8 @@
 # 构建与发布维护参考
 
 范围：`ayanamist/codex` 的三平台独立构建、打包与 GitHub Releases 分发。
-核对日期：2026-11-16；工作区版本：`0.169.0`。
-关键词：release、GitHub Actions、版本、helper、glibc、V8、rust-cache、prerelease。
+核对日期：2026-11-18；工作区版本：`0.170.0`。
+关键词：release、GitHub Actions、版本、helper、glibc、V8、rust-cache、prerelease、latest。
 安装与更新操作见 [中文使用手册](../install.md)。
 
 ## 工作流与发布入口
@@ -53,16 +53,16 @@
 首个平台创建非 latest 的 prerelease，随后各平台通过 `--clobber` 上传本平台包、
 安装器，并根据远端资产摘要重新生成 `codex-package_SHA256SUMS`。
 发布说明在创建时写入，后续平台不覆盖。
-三个目标包齐全后仍保持 prerelease，不自动晋升 `latest`。
-自动发布不再执行相对于当前 latest 的版本和提交祖先检查。
-维护者检查包完整性及目标版本后，可以显式晋升：
+Linux 和 Windows 的最后一个发布步骤传入 `publish --promote-when-ready`。
+各平台包只在编译、打包和身份检查通过后上传；发布脚本在同一 tag 的 Linux x64 GNU、
+Windows x64 MSVC 包均存在且共享校验清单成功上传、包集合稳定后，执行
+`gh release edit TAG --prerelease=false --latest`，将该 release 晋升为默认稳定版。
+两个平台谁先完成都可以；只有一个平台包时继续保持 prerelease，失败平台补跑后可完成晋升。
+macOS 不作为晋升条件，也不执行晋升；其包仍独立上传到同一 release 并更新共享校验清单。
 
-```sh
-gh release edit TAG --repo ayanamist/codex --prerelease=false --latest
-```
-
-将 `TAG` 替换成实际发布 tag。晋升前，默认安装入口继续提供先前的稳定版；
-预发布版本需要通过安装器显式指定版本安装。
+就绪检查依据对应 tag 的包资产和 SHA-256 摘要，不查询兄弟工作流的运行状态；
+已成功上传的同提交包在重跑中可复用。自动发布不执行相对于当前 latest 的版本和提交祖先检查。
+晋升前，默认安装入口继续提供先前的稳定版；预发布版本需要通过安装器显式指定版本安装。
 
 ## 构建与包内容
 
@@ -158,6 +158,46 @@ Windows 使用短 Cargo home，并在依赖解析前启用 Git longpaths。
 `rust-build-timings-*` artifact 保留 Cargo HTML timings 和源适配报告，保存七天。
 macOS 分别保存两个入口的 timing artifact；不再生成 sccache JSON 或暖构建测量 artifact。
 
+## 构建并发与跨平台编译边界
+
+范围：发布入口的编译并发与编译宿主选择；2026-11-18 对照工作区 `0.170.0`
+及当前三个发布工作流重新核对。关键词：CARGO_BUILD_JOBS、cross compilation、
+cargo-xwin、cargo-zigbuild、OSXCross、Apple SDK、Cargo timings。
+
+三个工作流均设置 `CARGO_BUILD_JOBS=2`，release profile 使用 ThinLTO 和四个
+codegen units。并发调整应同时核对 Git 历史与 Cargo timings：
+`15293e12e1` 为降低 Linux 资源压力，将并发从三降到二，同时增加 swap、磁盘清理和资源报告；
+`4d80cc8387` 将 macOS/Windows 从三降到二，但未记录原因；
+`6376c866fb` 随后拆分 macOS 构建并移除 sccache，改变了构建拓扑和缓存条件。
+exit 143 本身不能证明 OOM，多项缓解措施同时生效也不能隔离并发数的影响。
+
+CPU 使用率或等待中的 crate 只能提示可能的并行空间，不能证明提高并发安全或更快。
+Cargo jobserver 也协调部分 rustc 代码生成；最终只剩一个编译单元不表示增加 jobs 必然无效，
+该单元的耗时也不能全部归为系统链接。比较必须固定源码、profile、runner 和可比缓存状态，
+并同时记录内存及 swap；当前没有完成不同 jobs 设置的受控性能比较。
+
+现有发布工作流仍在各目标原生系统编译。2026-11-14 的跨编译工具资料评估涉及
+Windows MSVC 的 cargo-xwin，以及 macOS 的 cargo-zigbuild/OSXCross；
+这些候选尚未在本仓库完成实际交叉编译或性能验证，不能视为已支持的发布路径。
+macOS 还需要确认 Apple SDK 使用条件、framework 和 deployment target；
+应按实际选定的工具版本重新核对工具链要求。
+
+现有打包契约限定重新编译 CLI/executor 并校验复用 helper 的字节。
+跨编译可行性仍需检查这两个入口的实际传递依赖与 native build scripts，
+不能根据独立的 Bazel 配置或复用上游 helper 就推断 Cargo 能成功跨编译。
+macOS 原生 strip/签名和各平台包身份检查仍有独立作用；
+`--version`、`--build-commit` 只覆盖加载与身份，不覆盖沙箱、ConPTY、keychain 或完整运行行为。
+
+核对命令（不触发构建）：
+
+```sh
+rg -n 'CARGO_BUILD_JOBS|cargo build|codesign|Check the packaged' .github/workflows/rust-release-*.yml
+rg -n '^\[profile.release\]|^lto =|^codegen-units =' codex-rs/Cargo.toml
+git show 15293e12e1 -- .github/workflows/rust-release-linux.yml
+git show 4d80cc8387 -- .github/workflows/rust-release-macos.yml .github/workflows/rust-release-windows.yml
+git show 6376c866fb -- .github/workflows/rust-release-*.yml
+```
+
 ## 安装器与更新契约
 
 [`install.sh`](../../scripts/install/install.sh) 和
@@ -165,7 +205,7 @@ macOS 分别保存两个入口的 timing artifact；不再生成 sccache JSON �
 解析 latest 或指定版本，并验证 SHA-256；默认请求失败就停止，不回退官方分发。
 继承的 `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` 不能切换到官方镜像。
 安装器接受合法 SemVer 后缀，也保留历史编号版本支持。
-`latest` 查询只选择稳定发布，不会自动选择当前流程生成的 prerelease。
+`latest` 查询只选择稳定发布；Linux 和 Windows 包就绪并自动晋升后，默认安装入口使用新版本。
 
 共享校验清单 `codex-package_SHA256SUMS` 必须在所有发布平台固定输出 UTF-8、LF 换行，
 不使用 Windows 文本模式默认的 CRLF。Unix 安装器同时接受 LF 和 CRLF，解析时只移除行尾

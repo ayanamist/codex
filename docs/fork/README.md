@@ -20,7 +20,7 @@
 | [MCP 配置契约](project-mcp-configuration.md) | 项目配置发现、解析、原子替换、信任和插件配置边界 | loader、merge、MCP、兼容性 |
 | [Skill 策略契约](skill-invocation-policy.md) | 策略优先级、发现路径、缓存和配置编辑 | policy、executor、plugins、cache |
 | [沙箱清理契约](sandbox-mount-targets.md) | 挂载点身份记录、并发所有者和安全删除条件 | inode、identity、cleanup、SIGKILL |
-| [构建与发布](release-management.md) | 三平台预发布、手动晋升稳定版、打包、辅助程序复用和构建缓存 | release、GitHub Actions、V8、rust-cache、prerelease |
+| [构建与发布](release-management.md) | 三平台独立发布、Linux/Windows 就绪后自动晋升稳定版、打包、辅助程序复用、构建缓存及并发与跨编译边界 | release、GitHub Actions、V8、rust-cache、prerelease、latest、CARGO_BUILD_JOBS、cross compilation |
 | [工作流入口](../../.github/workflows/README.md) | 平台工作流位置、手动运行、失败重跑和发布通道 | workflow、dispatch、latest |
 
 范围：本 fork 的扩展及分发方式；按当前源码整理于 2026-11-16，工作区版本 `0.169.0`。

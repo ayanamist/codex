@@ -22,6 +22,7 @@ TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 )
+LATEST_TARGETS = ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
 
 
 def upstream_target(target: str) -> str:
@@ -395,7 +396,7 @@ def release_checksums(repository: str, tag: str, local: dict[str, str]) -> dict[
     return sums
 
 
-def publish(tag: str, directory: Path) -> None:
+def publish(tag: str, directory: Path, *, promote_when_ready: bool = False) -> None:
     """Add this platform's package to the release, creating the release on first use."""
     _, version = parse_tag(tag)
     archives = [path for target in TARGETS if (path := directory / f"codex-package-{target}.tar.gz").is_file()]
@@ -434,7 +435,10 @@ def publish(tag: str, directory: Path) -> None:
         published = sums.keys()
     else:
         raise RuntimeError("Release assets kept changing while writing checksums")
-    # Releases stay prereleases; promote one manually with `gh release edit --prerelease=false --latest`.
+    # Packages reach the release only after the platform's build and identity checks.
+    # Wait for both required packages and a successful checksum upload, not macOS.
+    if promote_when_ready and all(f"codex-package-{target}.tar.gz" in sums for target in LATEST_TARGETS):
+        run("gh", "release", "edit", tag, "--repo", repository, "--prerelease=false", "--latest")
 
 
 def write_release_notes(notes: Path, tag: str, version: str, commit: str, repository: str) -> None:
@@ -476,6 +480,7 @@ def main() -> None:
     publish_parser = commands.add_parser("publish")
     publish_parser.add_argument("--tag", required=True)
     publish_parser.add_argument("--directory", required=True, type=Path)
+    publish_parser.add_argument("--promote-when-ready", action="store_true", help="Promote to latest once Linux and Windows packages and checksums are published.")
     args = parser.parse_args()
     if args.command == "resolve":
         resolve(args.tag, args.github_output, ignored_paths=tuple(args.ignored_path))
@@ -487,7 +492,7 @@ def main() -> None:
     elif args.command == "assemble":
         print(assemble(args.package_dir, args.binary, args.exec_server_binary, args.output_dir))
     else:
-        publish(args.tag, args.directory)
+        publish(args.tag, args.directory, promote_when_ready=args.promote_when_ready)
 
 
 if __name__ == "__main__":
