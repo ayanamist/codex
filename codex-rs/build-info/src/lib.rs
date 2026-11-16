@@ -19,50 +19,55 @@ pub fn application_version() -> &'static str {
     APPLICATION_VERSION.get_or_init(|| BuildInfo::get().version().to_string())
 }
 
-/// Compare an authoritative latest release with the installed version.
-/// Fork commit hashes identify builds, so different hashes on the same upstream
-/// base request an update regardless of their lexical order. Legacy numbered
-/// releases remain supported for migration to the commit-based channel.
-/// GitHub Release metadata determines the stable channel; suffix names and lengths
-/// are unrestricted. Versions with build metadata are outside this channel.
+/// Compare a channel's latest release with the installed version.
+/// Numbered fork releases compare their upstream base and numeric revision;
+/// the trailing Git hash identifies source without contributing to precedence.
+/// On the same base, numbered forks supersede historical hash-only and numbered
+/// ayanamist releases. Other historical suffixes retain identity comparison.
+/// Versions with build metadata are outside this channel.
 pub fn is_newer_release(latest: &str, current: &str) -> Option<bool> {
-    fn key(value: &str) -> Option<((u64, u64, u64), u64, Option<&str>)> {
-        let value = value.trim();
-        let version = Version::parse(value).ok()?;
-        if !version.build.is_empty() {
-            return None;
+    fn suffix_key(version: &Version) -> (u8, u64, &str) {
+        let suffix = version.pre.as_str();
+        if suffix.is_empty() {
+            return (0, 0, "");
         }
-        let (revision, commit) = if version.pre.is_empty() {
-            (0, None)
-        } else if let Some(revision) = version
-            .pre
-            .as_str()
+        if let Some((revision, hash)) = suffix
+            .strip_prefix("fork.")
+            .and_then(|suffix| suffix.split_once(".g"))
+            && let Ok(revision) = revision.parse::<u64>()
+            && revision > 0
+            && hash.len() == 8
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return (3, revision, "");
+        }
+        if let Some(revision) = suffix
             .strip_prefix("ayanamist.")
             .and_then(|revision| revision.parse::<u64>().ok())
             .filter(|revision| *revision > 0)
         {
-            (revision, None)
-        } else {
-            (0, Some(value.split_once('-')?.1))
-        };
-        Some((
-            (version.major, version.minor, version.patch),
-            revision,
-            commit,
-        ))
+            return (1, revision, "");
+        }
+        (2, 0, suffix)
     }
 
-    let (latest_base, latest_revision, latest_commit) = key(latest)?;
-    let (current_base, current_revision, current_commit) = key(current)?;
-    Some(if latest_base != current_base {
-        latest_base > current_base
+    let latest = Version::parse(latest.trim()).ok()?;
+    let current = Version::parse(current.trim()).ok()?;
+    if !latest.build.is_empty() || !current.build.is_empty() {
+        return None;
+    }
+    let base = |version: &Version| (version.major, version.minor, version.patch);
+    if base(&latest) != base(&current) {
+        return Some(base(&latest) > base(&current));
+    }
+    let (latest_kind, latest_revision, latest_identity) = suffix_key(&latest);
+    let (current_kind, current_revision, current_identity) = suffix_key(&current);
+    Some(if latest_kind == 2 && current_kind == 2 {
+        latest_identity != current_identity
     } else {
-        match (latest_commit, current_commit) {
-            (Some(latest), Some(current)) => latest != current,
-            (Some(_), None) => true,
-            (None, Some(_)) => false,
-            (None, None) => latest_revision > current_revision,
-        }
+        (latest_kind, latest_revision) > (current_kind, current_revision)
     })
 }
 

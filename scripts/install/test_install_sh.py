@@ -68,7 +68,7 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(selected.resolve().name, f"{VERSION}-x86_64-unknown-linux-musl")
 
     def test_release_suffixes_are_not_restricted_to_names_or_lengths(self) -> None:
-        for version in ["0.167.0-ayanamist.10", "0.167.0-fork.5d0840ed", "0.167.0-fork.a", "0.167.0-custom-build.ABC123"]:
+        for version in ["0.167.0-ayanamist.10", "0.167.0-fork.5d0840ed", "0.167.0-fork.a", "0.167.0-custom-build.ABC123", "0.169.0-fork.3.g01234567"]:
             with self.subTest(version=version), tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
                 archive, checksum, metadata = create_package_release(

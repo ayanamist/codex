@@ -18,6 +18,74 @@ class ForkReleaseTests(unittest.TestCase):
     def reference(self, commit, kind="commit"):
         return {"object": {"type": kind, "sha": commit}}
 
+    def test_source_revision_increases_when_published_history_is_the_second_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args):
+                return release.run("git", *args, cwd=root)
+            def commit(name):
+                (root / name).write_text(name)
+                git("add", ".")
+                git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", name)
+                return git("rev-parse", "HEAD")
+            git("init", "-qb", "published")
+            upstream = commit("upstream")
+            commit("fork-base")
+            git("branch", "local")
+            for index in range(5):
+                published = commit(f"published-{index}")
+            git("checkout", "-q", "local")
+            commit("local-change")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "merge", "--no-ff", "-qm", "pull remote changes", "published")
+            merged = git("rev-parse", "HEAD")
+            git("merge-base", "--is-ancestor", published, merged)
+            self.assertEqual(git("rev-parse", "HEAD^2"), published)
+            self.assertGreater(
+                release.fork_revision(upstream, merged, cwd=root),
+                release.fork_revision(upstream, published, cwd=root),
+            )
+
+    def test_source_revision_counts_merged_history_after_upstream_integration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args):
+                return release.run("git", *args, cwd=root)
+            def commit(name):
+                (root / name).write_text(name)
+                git("add", ".")
+                git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", name)
+                return git("rev-parse", "HEAD")
+            def merge(branch):
+                git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "merge", "--no-ff", "-qm", "integration", branch)
+                return git("rev-parse", "HEAD")
+            git("init", "-qb", "upstream")
+            commit("base")
+            git("checkout", "-qb", "fork")
+            commit("old-fork-change")
+            git("checkout", "-q", "upstream")
+            commit("upstream-change-1")
+            upstream = commit("upstream-change-2")
+            git("checkout", "-q", "fork")
+            integrated = merge("upstream")
+            docs = commit("README.md")
+            self.assertEqual(release.fork_revision(upstream, integrated, cwd=root), 1)
+            self.assertEqual(release.fork_revision(upstream, docs, cwd=root), 2)
+            git("checkout", "-qb", "feature")
+            for index in range(5):
+                commit(f"feature-{index}")
+            git("checkout", "-q", "fork")
+            merged = merge("feature")
+            self.assertEqual(release.fork_revision(upstream, merged, cwd=root), 8)
+            tip = commit("runtime-change")
+            for _ in range(3):  # Platform builds and retries derive the same identity.
+                self.assertEqual(release.fork_revision(upstream, tip, cwd=root), 9)
+            with self.assertRaisesRegex(ValueError, "descended"):
+                release.fork_revision(upstream, upstream, cwd=root)
+            with self.assertRaisesRegex(ValueError, "descended"):
+                release.fork_revision(tip, docs, cwd=root)
+
     def test_build_cache_settings_ignore_release_identity_and_dependency_updates(self):
         manifest = {
             "workspace": {
@@ -29,7 +97,7 @@ class ForkReleaseTests(unittest.TestCase):
             "patch": {"crates-io": {"v8": {"git": "https://example.com/v8", "rev": "a" * 40}}},
         }
         before = release.build_cache_settings_hash(manifest)
-        manifest["workspace"]["package"]["version"] = "0.167.1-fork.bbbbbbbb"
+        manifest["workspace"]["package"]["version"] = "0.167.1-fork.3.gbbbbbbbb"
         manifest["workspace"]["dependencies"]["serde"] = "2"
         self.assertEqual(release.build_cache_settings_hash(manifest), before)
 
@@ -47,23 +115,23 @@ class ForkReleaseTests(unittest.TestCase):
         reordered = dict(reversed(list(manifest.items())))
         self.assertEqual(release.build_cache_settings_hash(reordered), before)
 
-    def test_push_reserves_a_tag_with_eight_commit_characters(self):
+    def test_push_reserves_a_tag_with_numeric_revision_and_eight_commit_characters(self):
         commit = "b" * 40
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, None, {}]
         ) as api:
-            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
+            self.assertEqual(release.automatic_tag("0.167.0", commit, revision=3), ("rust-v0.167.0-fork.3.gbbbbbbbb", True))
         self.assertEqual(api.call_args.kwargs["data"], {
-            "ref": "refs/tags/rust-v0.167.0-fork.bbbbbbbb", "sha": commit,
+            "ref": "refs/tags/rust-v0.167.0-fork.3.gbbbbbbbb", "sha": commit,
         })
-        self.assertEqual(release.commit_tag("0.168.0", commit), "rust-v0.168.0-fork.bbbbbbbb")
+        self.assertEqual(release.commit_tag("0.168.0", commit, 3), "rust-v0.168.0-fork.3.gbbbbbbbb")
 
     def test_retry_reuses_the_same_commit_tag_even_when_published(self):
         commit = "b" * 40
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, self.reference(commit)]
         ) as api:
-            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
+            self.assertEqual(release.automatic_tag("0.167.0", commit, revision=3), ("rust-v0.167.0-fork.3.gbbbbbbbb", True))
             self.assertFalse(any(call.kwargs.get("data") for call in api.call_args_list))
 
     def test_concurrent_platform_workflows_accept_a_tag_reserved_by_a_sibling(self):
@@ -74,17 +142,17 @@ class ForkReleaseTests(unittest.TestCase):
                 side_effect=[{"object": {"sha": commit}}, None, RuntimeError("Reference already exists"), sibling],
             ):
                 if accepted:
-                    self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
+                    self.assertEqual(release.automatic_tag("0.167.0", commit, revision=3), ("rust-v0.167.0-fork.3.gbbbbbbbb", True))
                 else:
                     with self.assertRaises(RuntimeError):
-                        release.automatic_tag("0.167.0", commit)
+                        release.automatic_tag("0.167.0", commit, revision=3)
 
     def test_abbreviated_hash_collision_cannot_reuse_another_commit_tag(self):
         commit = "b" * 40
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", side_effect=[{"object": {"sha": commit}}, self.reference("b" * 8 + "c" * 32)]
         ) as api, self.assertRaisesRegex(ValueError, "collision"):
-            release.automatic_tag("0.167.0", commit)
+            release.automatic_tag("0.167.0", commit, revision=3)
         self.assertFalse(any(call.kwargs.get("data") for call in api.call_args_list))
 
     def test_annotated_tags_are_peeled_before_matching_the_commit(self):
@@ -95,13 +163,13 @@ class ForkReleaseTests(unittest.TestCase):
                 {"object": {"type": "commit", "sha": commit}}, None,
             ]
         ):
-            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
+            self.assertEqual(release.automatic_tag("0.167.0", commit, revision=3), ("rust-v0.167.0-fork.3.gbbbbbbbb", True))
 
     def test_superseded_code_push_does_not_reserve_a_tag(self):
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", return_value={"object": {"sha": "c" * 40}}
         ) as api, patch("fork_release.run"), patch("fork_release.only_documentation_changed", return_value=False):
-            self.assertEqual(release.automatic_tag("0.167.0", "b" * 40), ("", False))
+            self.assertEqual(release.automatic_tag("0.167.0", "b" * 40, revision=3), ("", False))
             self.assertEqual(api.call_count, 1)
 
     def test_later_documentation_push_does_not_cancel_the_pending_code_release(self):
@@ -109,7 +177,7 @@ class ForkReleaseTests(unittest.TestCase):
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": "ayanamist/codex"}), patch(
             "fork_release.github_json", side_effect=[{"object": {"sha": head}}, None, {}]
         ), patch("fork_release.run") as run, patch("fork_release.only_documentation_changed", return_value=True) as changed:
-            self.assertEqual(release.automatic_tag("0.167.0", commit), ("rust-v0.167.0-fork.bbbbbbbb", True))
+            self.assertEqual(release.automatic_tag("0.167.0", commit, revision=3), ("rust-v0.167.0-fork.3.gbbbbbbbb", True))
         changed.assert_called_once_with(commit, head, ignored_paths=())
         self.assertEqual(run.call_args.args[-1], head)
 
@@ -150,10 +218,23 @@ class ForkReleaseTests(unittest.TestCase):
         for suffix in ["", "fork..abc", "fork.01", "bad/path", "a b", "a\n"]:
             with self.subTest(suffix=suffix), self.assertRaises(ValueError):
                 release.parse_tag("rust-v0.167.0-" + suffix)
-        with self.assertRaisesRegex(ValueError, "leading zeroes"):
-            release.commit_tag("0.167.0", "01234567" + "a" * 32)
+        self.assertEqual(
+            release.commit_tag("0.167.0", "01234567" + "a" * 32, 3),
+            "rust-v0.167.0-fork.3.g01234567",
+        )
+        for revision in [0, -1, 2**64]:
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "revision"):
+                release.commit_tag("0.167.0", "a" * 40, revision)
         with self.assertRaisesRegex(ValueError, "does not match"):
             release.verify_tag_commit("rust-v0.167.0-fork.aaaaaaaa", "b" * 40)
+        release.verify_tag_commit("rust-v0.167.0-fork.3.g01234567", "01234567" + "a" * 32, revision=3)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            release.verify_tag_commit("rust-v0.167.0-fork.3.gaaaaaaaa", "b" * 40)
+        with self.assertRaisesRegex(ValueError, "revision"):
+            release.verify_tag_commit("rust-v0.167.0-fork.3.gaaaaaaaa", "a" * 40, revision=2)
+        for suffix in ["fork.0.gaaaaaaaa", "fork.3.gabc", "fork.3.gAAAAAAAA", "fork.18446744073709551616.gaaaaaaaa"]:
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(ValueError, "numbered"):
+                release.verify_tag_commit("rust-v0.167.0-" + suffix, "a" * 40)
 
     def test_resolve_exports_the_automatic_tag_for_the_same_workflow(self):
         commit, upstream = "b" * 40, "a" * 40
@@ -164,11 +245,11 @@ class ForkReleaseTests(unittest.TestCase):
             (root / "codex-rs/Cargo.toml").write_text('[workspace.package]\nversion = "0.167.0"\n')
             (root / "codex-rs/rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.95.0"\n')
             with patch("fork_release.ROOT", root), patch("fork_release.github_json", return_value={"tag_name": "rust-v0.167.0", "draft": False, "prerelease": False}), patch(
-                "fork_release.run", side_effect=["", upstream, "", commit]
-            ), patch("fork_release.automatic_tag", return_value=("rust-v0.167.0-fork.bbbbbbbb", True)):
+                "fork_release.run", side_effect=["", upstream, "", commit, "3"]
+            ), patch("fork_release.automatic_tag", return_value=("rust-v0.167.0-fork.3.gbbbbbbbb", True)):
                 release.resolve(None, output)
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-            self.assertEqual(values["tag"], "rust-v0.167.0-fork.bbbbbbbb")
+            self.assertEqual(values["tag"], "rust-v0.167.0-fork.3.gbbbbbbbb")
             self.assertEqual(values["fork_commit"], commit)
             self.assertEqual(values["upstream_commit"], upstream)
             self.assertEqual(values["should_publish"], "true")
@@ -187,13 +268,13 @@ class ForkReleaseTests(unittest.TestCase):
                     api.assert_not_called()
             manifest.write_text('[workspace.package]\nversion = "0.167.0"\n')
             with patch("fork_release.ROOT", root), self.assertRaisesRegex(ValueError, "unchanged upstream"):
-                release.resolve("rust-v0.168.0-fork.bbbbbbbb", root / "output")
+                release.resolve("rust-v0.168.0-fork.3.gbbbbbbbb", root / "output")
 
     def test_tag_creation_sends_a_structured_json_body(self):
         import subprocess
         result = subprocess.CompletedProcess([], 0, "{}", "")
         with patch("fork_release.subprocess.run", return_value=result) as run:
-            body = {"ref": "refs/tags/rust-v0.167.0-fork.bbbbbbbb", "sha": "b" * 40}
+            body = {"ref": "refs/tags/rust-v0.167.0-fork.3.gbbbbbbbb", "sha": "b" * 40}
             release.github_json("repos/ayanamist/codex/git/refs", data=body)
             self.assertEqual(json.loads(run.call_args.kwargs["input"]), body)
             self.assertEqual(run.call_args.args[0][-4:], ["--method", "POST", "--input", "-"])

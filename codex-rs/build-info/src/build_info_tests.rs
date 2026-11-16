@@ -56,6 +56,49 @@ fn stable_fork_release_ordering() {
 }
 
 #[test]
+fn numbered_fork_releases_order_by_revision_and_migrate_legacy_versions() {
+    for (latest, current, expected) in [
+        (
+            "0.169.0-fork.10.g00000000",
+            "0.169.0-fork.9.gffffffff",
+            true,
+        ),
+        (
+            "0.169.0-fork.9.gffffffff",
+            "0.169.0-fork.10.g00000000",
+            false,
+        ),
+        (
+            "0.169.0-fork.10.gffffffff",
+            "0.169.0-fork.10.g00000000",
+            false,
+        ),
+        (
+            "0.169.0-fork.10.g00000000",
+            "0.169.0-fork.10.g00000000",
+            false,
+        ),
+        ("0.169.0-fork.6.g0ff7a389", "0.169.0-fork.6376c866", true),
+        ("0.169.0-fork.6376c866", "0.169.0-fork.6.g0ff7a389", false),
+        ("0.169.0-fork.0ff7a389", "0.169.0-fork.6.g0ff7a389", false),
+        ("0.169.0-fork.1.g01234567", "0.169.0-ayanamist.99", true),
+        ("0.169.0-ayanamist.99", "0.169.0-fork.1.g01234567", false),
+        (
+            "0.170.0-fork.1.g01234567",
+            "0.169.0-fork.99.gffffffff",
+            true,
+        ),
+        (
+            "0.169.0-fork.99.gffffffff",
+            "0.170.0-fork.1.g01234567",
+            false,
+        ),
+    ] {
+        assert_eq!(crate::is_newer_release(latest, current), Some(expected));
+    }
+}
+
+#[test]
 fn latest_release_suffixes_are_identities_with_no_name_or_length_restrictions() {
     for (latest, current, expected) in [
         ("0.167.0-fork.aaaaaaaa", "0.167.0-fork.bbbbbbbb", Some(true)),

@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 import tomllib
 
-from releases import is_valid_release_version
+from releases import is_valid_release_version, numbered_fork_revision
 
 ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = "openai/codex"
@@ -83,22 +83,43 @@ def tag_commit(repository: str, reference: dict) -> str:
     raise ValueError("Fork release tag does not resolve to a commit")
 
 
-def commit_tag(base: str, commit: str) -> str:
+def fork_revision(upstream_commit: str, commit: str, *, cwd: Path = ROOT) -> int:
+    """Count all fork ancestors descended from the upstream base.
+
+    Including every parent makes descendants advance even when published history
+    is merged as a second parent. Merges and documentation may leave gaps between
+    published revisions; retries and all platforms agree.
+    """
+    revision = int(run("git", "rev-list", "--ancestry-path", "--count",
+                       f"{upstream_commit}..{commit}", cwd=cwd))
+    if not 0 < revision <= 2**64 - 1:
+        raise ValueError("A fork revision requires commits descended from the upstream base")
+    return revision
+
+
+def commit_tag(base: str, commit: str, revision: int) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("A full lowercase fork commit is required")
-    tag = f"rust-v{base}-fork.{commit[:8]}"
-    if commit[:8].isdigit() and commit.startswith("0"):
-        raise ValueError("The first eight commit characters form a numeric SemVer identifier with leading zeroes; use another source commit")
+    if not 0 < revision <= 2**64 - 1:
+        raise ValueError("A positive u64 fork revision is required")
+    tag = f"rust-v{base}-fork.{revision}.g{commit[:8]}"
     parse_tag(tag)
     return tag
 
 
-def verify_tag_commit(tag: str, commit: str) -> None:
+def verify_tag_commit(tag: str, commit: str, *, revision: int | None = None) -> None:
     _, version = parse_tag(tag)
     identity = version.partition("-")[2]
     suffix = identity.removeprefix("fork.") if identity.startswith("fork.") else ""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("A full lowercase fork commit is required")
+    numbered = numbered_fork_revision(version)
+    if ".g" in suffix and numbered is None:
+        raise ValueError("Invalid numbered fork tag")
+    if numbered is not None:
+        suffix = identity.rsplit(".g", 1)[1]
+        if revision is not None and numbered != revision:
+            raise ValueError("Fork tag revision does not match the source history")
     if suffix and re.fullmatch(r"[0-9a-f]+", suffix) and not commit.startswith(suffix):
         raise ValueError("Fork tag hash does not match the source commit")
 
@@ -113,7 +134,7 @@ def only_documentation_changed(commit: str, head: str, *, ignored_paths: tuple[s
     return not changed
 
 
-def automatic_tag(base: str, commit: str, ignored_paths: tuple[str, ...] = ()) -> tuple[str, bool]:
+def automatic_tag(base: str, commit: str, ignored_paths: tuple[str, ...] = (), *, revision: int) -> tuple[str, bool]:
     """Reserve a deterministic commit tag under the workflow's publication lock."""
     repository = os.environ["GITHUB_REPOSITORY"]
     head = github_json(f"repos/{repository}/git/ref/heads/fork-release")
@@ -123,7 +144,7 @@ def automatic_tag(base: str, commit: str, ignored_paths: tuple[str, ...] = ()) -
         if not only_documentation_changed(commit, head_commit, ignored_paths=ignored_paths):
             print("This commit has been superseded on fork-release; skipping publication")
             return "", False
-    tag = commit_tag(base, commit)
+    tag = commit_tag(base, commit, revision)
     reference = github_json(f"repos/{repository}/git/ref/tags/{tag}", missing_ok=True)
     if reference is not None:
         if tag_commit(repository, reference) != commit:
@@ -149,7 +170,7 @@ def resolve(tag: str | None, output: Path, *, ignored_paths: tuple[str, ...] = (
     if not is_valid_release_version(base) or "-" in base or base == "0.0.0":
         raise ValueError("Resolve from an upstream release checkout with a stable package version")
     if tag is None:
-        commit_tag(base, "a" * 40)
+        commit_tag(base, "a" * 40, 1)
     else:
         tag_base, _ = parse_tag(tag)
         if tag_base != base:
@@ -162,11 +183,12 @@ def resolve(tag: str | None, output: Path, *, ignored_paths: tuple[str, ...] = (
     upstream_commit = run("git", "rev-parse", "FETCH_HEAD^{commit}")
     run("git", "merge-base", "--is-ancestor", upstream_commit, "HEAD")
     fork_commit = run("git", "rev-parse", "HEAD")
+    revision = fork_revision(upstream_commit, fork_commit)
     if tag is not None:
-        verify_tag_commit(tag, fork_commit)
+        verify_tag_commit(tag, fork_commit, revision=revision)
     should_publish = True
     if tag is None:
-        tag, should_publish = automatic_tag(base, fork_commit, ignored_paths)
+        tag, should_publish = automatic_tag(base, fork_commit, ignored_paths, revision=revision)
     if not tag:
         emit(output, {"should_publish": "false", "should_build": "false"})
         return

@@ -17,6 +17,29 @@ from releases import is_valid_release_version, should_make_latest, should_update
 
 
 class VersionComparisonTest(unittest.TestCase):
+    def test_numbered_fork_revisions_ignore_hash_order_and_migrate_legacy_versions(self) -> None:
+        cases = [
+            ("0.169.0-fork.10.g00000000", "0.169.0-fork.9.gffffffff", True),
+            ("0.169.0-fork.9.gffffffff", "0.169.0-fork.10.g00000000", False),
+            ("0.169.0-fork.10.gffffffff", "0.169.0-fork.10.g00000000", False),
+            ("0.169.0-fork.6.g0ff7a389", "0.169.0-fork.6376c866", True),
+            ("0.169.0-fork.6376c866", "0.169.0-fork.6.g0ff7a389", False),
+            ("0.169.0-fork.1.g01234567", "0.169.0-ayanamist.99", True),
+            ("0.169.0-ayanamist.99", "0.169.0-fork.1.g01234567", False),
+            ("0.170.0-fork.1.g01234567", "0.169.0-fork.99.gffffffff", True),
+        ]
+        for latest, current, expected in cases:
+            with self.subTest(latest=latest, current=current):
+                self.assertEqual(should_update_version(latest, current), expected)
+
+    def test_latest_pointer_cannot_regress_a_numbered_fork(self) -> None:
+        latest = {"tag_name": "rust-v0.169.0-fork.10.g00000000", "draft": False, "prerelease": False}
+        self.assertFalse(should_make_latest("0.169.0-fork.9.gffffffff", latest))
+        self.assertFalse(should_make_latest("0.169.0-fork.6376c866", latest))
+        self.assertFalse(should_make_latest("0.169.0-fork.10.gffffffff", latest))
+        self.assertTrue(should_make_latest("0.169.0-fork.10.g00000000", latest))
+        self.assertTrue(should_make_latest("0.169.0-fork.11.g01234567", latest))
+
     def test_validation_accepts_alpha_hotfix(self) -> None:
         self.assertTrue(is_valid_release_version("0.123.0-alpha.5.2"))
 

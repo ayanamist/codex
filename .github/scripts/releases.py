@@ -29,10 +29,20 @@ def is_valid_stable_release_version(version: str) -> bool:
     return is_valid_release_version(version) and channel not in {"alpha", "beta"}
 
 
+def numbered_fork_revision(version: str) -> int | None:
+    match = re.fullmatch(r"fork\.([1-9][0-9]*)\.g[0-9a-f]{8}", version.partition("-")[2])
+    if match and int(match[1]) <= 2**64 - 1:
+        return int(match[1])
+    return None
+
+
 def _version_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...] | str]:
     base, _, prerelease = version.partition("-")
     channel, _, suffix = prerelease.partition(".")
     release = tuple(int(part) for part in base.split("."))
+    revision = numbered_fork_revision(version)
+    if revision is not None:
+        return release, 5, (revision,)
     if channel in {"alpha", "beta", "", "ayanamist"} and (
         not suffix or all(part.isdigit() for part in suffix.split("."))
     ):
@@ -43,10 +53,10 @@ def _version_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...] | 
 
 
 def should_update_version(version: str, current_version: str) -> bool:
-    """Compare channel identities; fork hashes require an authoritative latest pointer.
+    """Order numbered forks by revision, retaining historical channel migration.
 
-    Hashes have no chronological order. Publishers must also verify commit ancestry
-    before advancing a pointer between different hashes of the same release line.
+    The trailing hash identifies source; it never orders equal fork revisions.
+    Historical hash-only suffixes still require an authoritative latest pointer.
     """
     if not is_valid_release_version(version):
         raise ValueError(f"invalid release version: {version}")
@@ -73,8 +83,9 @@ def should_make_latest(version: str, latest: dict) -> bool:
         or latest.get("prerelease") is not False
     ):
         raise ValueError("Cannot determine the current GitHub latest stable release")
-    # Suffixes identify builds, not publication order. The fork publisher checks
-    # commit ancestry before advancing latest within a base version.
+    if numbered_fork_revision(version) is not None or numbered_fork_revision(current) is not None:
+        return version == current or should_update_version(version, current)
+    # Historical hash-only releases have no ordering within the same base.
     return _version_key(version)[0] >= _version_key(current)[0]
 
 

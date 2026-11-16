@@ -34,8 +34,17 @@
 
 [`fork_release.py`](../../.github/scripts/fork_release.py) 从原始 workspace 版本解析上游稳定版本，
 确认 `openai/codex` 对应发布存在，且上游 tag commit 是 fork commit 的祖先。
-生成版本为 `<上游版本>-fork.<源码提交前八位>`，tag 为 `rust-v<版本>`。
+生成版本为 `<上游版本>-fork.<序号>.g<源码提交前八位>`，例如
+`0.169.0-fork.6.g661ed353`；tag 为 `rust-v<版本>`。
+序号通过 `git rev-list --ancestry-path --count <upstreamCommit>..<forkCommit>`
+计算，统计当前提交祖先中属于该上游版本后代的全部提交，包含合并进来的旁支历史。
+在同一上游版本内，后代提交的计数严格增加，即使已发布历史位于合并提交的第二父链也成立。
+只沿第一父链计数不满足这个条件：普通 `git pull` 合并就可能让序号从 6 降到 3，
+导致更新提示失效；对应回归测试用真实 Git 仓库验证了这一情形。
+合并旁支和纯文档提交可能让已发布序号跳号。同一源码在三平台和重跑中得到相同版本，
+不依赖 Actions 运行编号或发布完成时间。该顺序依赖提交祖先关系，历史重写需另行处理。
 完整源码提交保存在 tag 目标和包元数据中；短哈希碰撞时必须失败。
+`g` 前缀让全数字及以零开头的短哈希仍然是合法 SemVer 标识。
 
 三个平台为同一源码计算相同 tag，允许兄弟工作流先创建该 tag。
 过时的排队代码提交会跳过；较新的纯文档提交不使仍待发布的代码失效。
@@ -138,7 +147,11 @@ feature、目标平台和 pin 的兼容性。
 
 Cargo 依赖及第三方编译产物通过 rust-cache 保留；显式 key 包含与版本无关的根构建设置指纹。
 内部包身份在构建副本中保持稳定；工作流不使用 sccache，也不保留双次构建测量模式。
-rust-cache 不缓存工作区 crate，可执行文件的最终链接仍需执行。
+三个工作流都设置 `cache-workspace-crates: "false"`，不保存工作区 crate 的编译产物；
+即使第三方依赖全部命中，内部 crate 仍会重新编译，可执行文件仍需最终链接。
+判断是否复用应同时检查恢复日志和 Cargo 实际编译列表：`Cache restored successfully`
+表示恢复完成；`full match: false` 仅表示通过 restore key 前缀恢复了旧依赖指纹的缓存，
+不表示恢复失败。该行为见固定版本的 [rust-cache 恢复逻辑](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/restore.ts)。
 缓存仍会受编译器、依赖、编译参数和存储淘汰影响，不能保证暖构建时长。
 Windows 使用短 Cargo home，并在依赖解析前启用 Git longpaths。
 
@@ -172,7 +185,13 @@ macOS 分别保存两个入口的 timing artifact；不再生成 sccache JSON �
 官方 Homebrew、npm、pnpm、Bun、Vite+ 自动更新被拒绝，需要迁移到独立安装。
 debug 构建拒绝 update，未知安装布局要求手工更新。
 启动和 doctor 检查均查询 fork；启动版本缓存位于 `$CODEX_HOME/version.json`，
-后台刷新间隔为 20 小时，旧缓存可能暂时显示旧来源。`codex update` 不使用该缓存。
+后台刷新间隔为 20 小时。启动和 doctor 共用 `codex-build-info::is_newer_release`：
+先比较上游基础版本，再比较同一基础版本内的数字序号，短哈希只用于追溯。
+同一序号的不同哈希不表示先后；低序号或旧哈希格式缓存不会提示新格式安装回退。
+同一基础版本内，新格式高于历史 `fork.<哈希>` 和 `ayanamist.<编号>`，支持单向迁移；
+跨基础版本仍按基础版本比较。缓存结构和 20 小时周期保持上游设计，
+没有新增与安装版本绑定的缓存字段。此规则适用于新格式安装；旧版 CLI 需先升级才能使用新比较逻辑。
+`codex update` 不使用该缓存。
 debug 和 `0.0.0` 源码构建不进行启动更新检查。
 没有用于指定 GitHub 仓库或安装器 URL 的 config.toml 设置。
 
@@ -197,6 +216,7 @@ python3 -m unittest discover -s .github/scripts -p test_prepare_fork_sources.py
 python3 -m unittest discover -s .github/scripts -p test_prepare_rusty_v8_source.py
 python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py
 python3 scripts/install/test_install_sh.py
+cargo nextest run --manifest-path codex-rs/Cargo.toml -p codex-build-info --lib
 ```
 
 这些命令不代表本次文档整理已执行测试或发布。三平台安装、签名体验、完整包运行和
