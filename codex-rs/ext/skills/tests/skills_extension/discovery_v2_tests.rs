@@ -90,6 +90,7 @@ async fn v2_steps_refresh_metadata_and_preserve_separate_environments() -> TestR
             });
     }
     let query = SkillListQuery {
+        skill_config_rules: Default::default(),
         turn_id: "turn-1".to_string(),
         executor_roots: Vec::new(),
         host_snapshot: None,
@@ -297,6 +298,7 @@ async fn v2_empty_failed_and_partial_results_never_load_legacy_roots() -> TestRe
     };
     let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let query = |snapshots| SkillListQuery {
+        skill_config_rules: Default::default(),
         turn_id: "turn-1".to_string(),
         // V2 must ignore this unavailable legacy root.
         executor_roots: vec![AccessedSelectedCapabilityRoot {
@@ -335,5 +337,64 @@ async fn v2_empty_failed_and_partial_results_never_load_legacy_roots() -> TestRe
     ] {
         assert_eq!(provider.list(query(snapshots)).await?, expected);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn v2_local_policy_overrides_product_and_invocation_fields_without_mutating_discovery()
+-> TestResult {
+    use codex_config::SkillConfigRule;
+    use codex_config::SkillConfigRuleSelector;
+    use codex_config::SkillConfigRules;
+    use codex_config::SkillPolicyOverride;
+    use codex_protocol::protocol::Product;
+    let mut snapshot = installation("remote")?;
+    Arc::make_mut(snapshot.result.as_mut().unwrap()).plugins[0].skills[0].policy =
+        Some(SkillPolicy {
+            allow_implicit_invocation: Some(true),
+            products: vec![Product::Chatgpt],
+        });
+    let provider = ExecutorSkillProvider::new_with_restriction_product(Some(Product::Codex));
+    let mut query = SkillListQuery {
+        skill_config_rules: Default::default(),
+        turn_id: "policy".into(),
+        executor_roots: vec![],
+        host_snapshot: None,
+        include_host_skills: false,
+        include_bundled_skills: false,
+        include_cloud_skills: false,
+        mcp_resources: None,
+        executor_capability_discovery: None,
+        executor_capability_discovery_v2: Some(vec![snapshot.clone()]),
+    };
+    assert!(provider.list(query.clone()).await?.entries.is_empty());
+    query.skill_config_rules = SkillConfigRules {
+        entries: vec![SkillConfigRule {
+            selector: SkillConfigRuleSelector::Name("local-name:work".into()),
+            enabled: Some(true),
+            policy: Some(SkillPolicyOverride {
+                allow_implicit_invocation: Some(false),
+                products: Some(vec![]),
+            }),
+        }],
+    };
+    let explicit_only = provider.list(query.clone()).await?;
+    assert_eq!(explicit_only.entries.len(), 1);
+    assert!(explicit_only.entries[0].enabled);
+    assert!(!explicit_only.entries[0].prompt_visible);
+    query.skill_config_rules.entries[0]
+        .policy
+        .as_mut()
+        .unwrap()
+        .allow_implicit_invocation = Some(true);
+    assert!(provider.list(query).await?.entries[0].prompt_visible);
+    assert_eq!(
+        snapshot.result.as_ref().unwrap().plugins[0].skills[0]
+            .policy
+            .as_ref()
+            .unwrap()
+            .products,
+        vec![Product::Chatgpt]
+    );
     Ok(())
 }

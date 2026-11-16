@@ -612,6 +612,8 @@ pub enum CircuitBreakAction {
 #[schemars(deny_unknown_fields)]
 pub struct ProjectConfig {
     pub trust_level: Option<TrustLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<crate::ProjectSkillsConfig>,
 }
 
 impl ProjectConfig {

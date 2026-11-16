@@ -101,7 +101,7 @@ use codex_config::ConfigLayerStack;
 use codex_config::SkillConfigRules;
 use codex_config::clear_user_plugin;
 use codex_config::set_user_plugin_enabled;
-use codex_config::skill_config_rules_from_stack;
+use codex_config::skill_config_rules_with_project;
 use codex_config::types::PluginConfig;
 use codex_config::types::PluginsConfigToml;
 use codex_config::types::ToolSuggestDisabledTool;
@@ -168,6 +168,7 @@ type EffectivePluginsChangedCallback = Arc<dyn Fn(EffectivePluginsChange) + Send
 
 #[derive(Debug, Clone)]
 pub struct PluginsConfigInput {
+    project_config: Option<codex_config::config_toml::ProjectConfig>,
     pub config_layer_stack: ConfigLayerStack,
     pub plugins: PluginsConfigToml,
     pub model_provider_id: String,
@@ -196,6 +197,7 @@ impl PluginsConfigInput {
         product_sku: Option<String>,
     ) -> Self {
         Self {
+            project_config: None,
             config_layer_stack,
             plugins,
             model_provider_id,
@@ -209,6 +211,18 @@ impl PluginsConfigInput {
             runtime_http_clients: Arc::new(OnceLock::new()),
             runtime_auth_mode: None,
         }
+    }
+
+    pub fn with_project_config(
+        mut self,
+        project: codex_config::config_toml::ProjectConfig,
+    ) -> Self {
+        self.project_config = Some(project);
+        self
+    }
+
+    pub(crate) fn skill_config_rules(&self) -> SkillConfigRules {
+        skill_config_rules_with_project(&self.config_layer_stack, self.project_config.as_ref())
     }
 
     pub fn with_plugin_recommendations_enabled(mut self, enabled: bool) -> Self {
@@ -715,7 +729,7 @@ impl PluginLoadCacheKey {
         Self {
             configured_plugins,
             plugin_policy,
-            skill_config_rules: skill_config_rules_from_stack(&config.config_layer_stack),
+            skill_config_rules: config.skill_config_rules(),
             remote_global_catalog_active,
             // Local curated loads are auth-independent; only remote snapshots vary by account.
             auth_identity: remote_global_catalog_active.then_some(auth_identity),
@@ -986,6 +1000,7 @@ impl PluginsManager {
             let load_started = Instant::now();
             let plugins = load_plugins_from_layer_stack(
                 &config.config_layer_stack,
+                Some(&config.skill_config_rules()),
                 &config.plugins,
                 self.remote_installed_plugins_snapshot(),
                 &self.store,
@@ -2892,7 +2907,7 @@ impl PluginsManager {
             plugin_id: plugin_id.as_key(),
             remote_plugin_id: self.remote_plugin_id_for(&plugin_id),
         };
-        let skill_config_rules = skill_config_rules_from_stack(&config.config_layer_stack);
+        let skill_config_rules = config.skill_config_rules();
         let resolved_skills = load_plugin_skill_inventory(
             &source_path,
             &plugin_identity,

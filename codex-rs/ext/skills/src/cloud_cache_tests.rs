@@ -114,6 +114,7 @@ fn client() -> Arc<McpResourceClient> {
 
 fn query(client: Option<Arc<McpResourceClient>>) -> SkillListQuery<'static> {
     SkillListQuery {
+        skill_config_rules: Default::default(),
         turn_id: "turn".into(),
         executor_roots: Vec::new(),
         host_snapshot: None,

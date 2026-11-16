@@ -7,7 +7,9 @@ use std::sync::RwLock;
 use codex_config::ConfigLayerStack;
 use codex_config::SkillConfigRules;
 use codex_config::bundled_skills_enabled_from_stack;
-use codex_config::skill_config_rules_from_stack;
+use codex_config::config_toml::ProjectConfig;
+use codex_config::skill_config_rules_with_project;
+use codex_config::skill_project_for_cwd;
 use codex_exec_server::EnvironmentAccess;
 use codex_exec_server::EnvironmentAccessKey;
 use codex_exec_server::ExecutorFileSystem;
@@ -38,7 +40,6 @@ use crate::host_roots::resolve_skill_roots;
 use crate::loader::HostSkillRoot;
 use crate::loader::HostSkillRootSnapshot;
 use crate::loader::MAX_CONCURRENT_ROOT_SCANS;
-use crate::loader::load_and_merge_host_skill_roots;
 use crate::loader::load_and_merge_host_skill_roots_with_request_snapshots;
 
 const CONFIG_SKILLS_CACHE_CAPACITY: usize = 32;
@@ -54,6 +55,7 @@ pub struct HostSkillsLoadInput {
     implicit_repository_skills: bool,
     effective_skill_roots: Vec<PluginSkillRoot>,
     config_layer_stack: ConfigLayerStack,
+    project_config: Option<ProjectConfig>,
     plugin_skill_snapshots: Option<SkillRootSnapshots<PluginSkillRoot>>,
 }
 
@@ -63,8 +65,10 @@ impl HostSkillsLoadInput {
         effective_skill_roots: Vec<PluginSkillRoot>,
         config_layer_stack: ConfigLayerStack,
     ) -> Self {
+        let project_config = skill_project_for_cwd(&config_layer_stack, cwd.as_path(), None);
         Self {
             cwd,
+            project_config,
             implicit_repository_skills: true,
             effective_skill_roots,
             config_layer_stack,
@@ -75,9 +79,52 @@ impl HostSkillsLoadInput {
     /// Retains the turn's configuration and plugin selection for a new repository location.
     pub fn for_cwd(&self, cwd: AbsolutePathBuf) -> Self {
         Self {
+            project_config: skill_project_for_cwd(&self.config_layer_stack, cwd.as_path(), None),
             cwd,
             ..self.clone()
         }
+    }
+
+    /// Reuses the project selected during configuration loading, including its repository root.
+    pub fn with_project_config(mut self, project: ProjectConfig) -> Self {
+        self.project_config = Some(project);
+        self
+    }
+
+    fn config_rules(&self) -> SkillConfigRules {
+        skill_config_rules_with_project(&self.config_layer_stack, self.project_config.as_ref())
+    }
+
+    async fn for_executor(&self, fs: &dyn ExecutorFileSystem) -> Self {
+        let mut input = self.clone();
+        let has_project_skills = self
+            .config_layer_stack
+            .all_layers_low_to_high()
+            .any(|layer| {
+                matches!(
+                    layer.name,
+                    codex_config::ConfigLayerSource::User { .. }
+                        | codex_config::ConfigLayerSource::SessionFlags
+                ) && layer
+                    .config
+                    .get("projects")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|projects| {
+                        projects
+                            .values()
+                            .any(|project| project.get("skills").is_some())
+                    })
+            });
+        if has_project_skills {
+            let repo_root =
+                codex_git_utils::resolve_root_git_project_for_trust(fs, &input.cwd).await;
+            input.project_config = skill_project_for_cwd(
+                &input.config_layer_stack,
+                input.cwd.as_path(),
+                repo_root.as_ref().map(AbsolutePathBuf::as_path),
+            );
+        }
+        input
     }
 
     /// Host implicit command attribution only runs for the local environment.
@@ -103,7 +150,7 @@ pub struct HostSkillsService {
     codex_home: AbsolutePathBuf,
     restriction_product: Option<Product>,
     extra_roots: RwLock<Vec<AbsolutePathBuf>>,
-    cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, HostSkillsSnapshot>>,
+    cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, (SkillConfigRules, HostSkillsSnapshot)>>,
     cache_by_config: RwLock<VecDeque<ConfigSkillsCacheEntry>>,
     empty_remote_roots: Mutex<EmptyRemoteRootsCache>,
     // Shared across cwds so root scheduling cannot multiply per-root I/O fanout.
@@ -126,10 +173,14 @@ impl HostSkillsRequest<'_> {
         force_reload: bool,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> HostSkillsSnapshot {
+        let input = match &fs {
+            Some(fs) => input.for_executor(fs.as_ref()).await,
+            None => input.clone(),
+        };
         let repository = fs.as_ref().map(FileSystemEnvironmentAccessor::unrestricted);
         self.service
             .snapshot_for_cwd_with_root_snapshots(
-                input,
+                &input,
                 force_reload,
                 repository
                     .as_ref()
@@ -208,10 +259,14 @@ impl HostSkillsService {
         input: &HostSkillsLoadInput,
         repository: Option<(&Arc<dyn ExecutorFileSystem>, &dyn EnvironmentAccess)>,
     ) -> HostSkillsSnapshot {
+        let input = match repository {
+            Some((file_system, _)) => input.for_executor(file_system.as_ref()).await,
+            None => input.clone(),
+        };
         let project_markers = repository
             .map(|(file_system, _)| FileSystemEnvironmentAccessor::unrestricted(file_system));
         self.snapshot_for_config_with_project_markers(
-            input,
+            &input,
             repository.map(|(_, access)| access),
             project_markers
                 .as_ref()
@@ -243,7 +298,7 @@ impl HostSkillsService {
                 Some(&self.empty_remote_roots),
             )
             .await;
-        let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
+        let skill_config_rules = input.config_rules();
         let cache_key = config_skills_cache_key(&roots, &skill_config_rules, input);
         self.snapshot_for_skill_roots(
             input,
@@ -322,11 +377,12 @@ impl HostSkillsService {
             self.ensure_system_skills_installed();
         }
         let host = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+        let skill_config_rules = input.config_rules();
         let use_cwd_cache = repository.is_some();
         let cache_snapshot_by_cwd = use_cwd_cache && input.effective_skill_roots.is_empty();
         if cache_snapshot_by_cwd
             && !force_reload
-            && let Some(snapshot) = self.cached_snapshot_for_cwd(&input.cwd)
+            && let Some(snapshot) = self.cached_snapshot_for_cwd(&input.cwd, &skill_config_rules)
         {
             return snapshot;
         }
@@ -351,7 +407,6 @@ impl HostSkillsService {
         if !bundled_skills_enabled {
             roots.retain(|root| root.scope != SkillScope::System);
         }
-        let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
         let snapshot = if use_cwd_cache {
             let cache_key = config_skills_cache_key(&roots, &skill_config_rules, input);
             self.snapshot_for_skill_roots(
@@ -374,7 +429,7 @@ impl HostSkillsService {
                 .cache_by_cwd
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.insert(input.cwd.clone(), snapshot.clone());
+            cache.insert(input.cwd.clone(), (skill_config_rules, snapshot.clone()));
         }
         snapshot
     }
@@ -445,6 +500,8 @@ impl HostSkillsService {
             self.restriction_product,
             input.plugin_skill_snapshots.as_ref(),
             request_root_snapshots,
+            skill_config_rules,
+            /*include_restricted_skills*/ false,
         )
         .await;
         let disabled_paths = skill_config_rules.resolve_disabled_paths(
@@ -453,9 +510,11 @@ impl HostSkillsService {
                 .iter()
                 .map(|skill| (skill.name.as_str(), &skill.path_to_skills_md)),
         );
-        outcome
+        let mut outcome = outcome
             .with_disabled_paths(disabled_paths, &accessors)
-            .await
+            .await;
+        outcome.config_rules = skill_config_rules.clone();
+        outcome
     }
 
     pub fn clear_cache(&self) {
@@ -485,11 +544,19 @@ impl HostSkillsService {
         info!("skills cache cleared ({cleared} entries)");
     }
 
-    fn cached_snapshot_for_cwd(&self, cwd: &AbsolutePathBuf) -> Option<HostSkillsSnapshot> {
-        match self.cache_by_cwd.read() {
-            Ok(cache) => cache.get(cwd).cloned(),
-            Err(err) => err.into_inner().get(cwd).cloned(),
-        }
+    fn cached_snapshot_for_cwd(
+        &self,
+        cwd: &AbsolutePathBuf,
+        rules: &SkillConfigRules,
+    ) -> Option<HostSkillsSnapshot> {
+        let cache = self
+            .cache_by_cwd
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .get(cwd)
+            .filter(|(previous, _)| previous == rules)
+            .map(|(_, snapshot)| snapshot.clone())
     }
 
     fn extra_roots(&self) -> Vec<AbsolutePathBuf> {
@@ -518,11 +585,14 @@ impl SkillRootLoader<PluginSkillRoot> for HostSkillsService {
                 .into_iter()
                 .map(|root| HostSkillRoot::plugin(root, &host))
                 .collect();
-            let outcome = load_and_merge_host_skill_roots(
+            let outcome = load_and_merge_host_skill_roots_with_request_snapshots(
                 roots,
                 &self.root_scan_slots,
                 request.restriction_product,
                 request.snapshots.as_ref(),
+                None,
+                &SkillConfigRules::default(),
+                request.include_restricted_skills,
             )
             .await;
             LoadedSkills {

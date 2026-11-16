@@ -22,8 +22,8 @@ use crate::catalog::SkillReadResult;
 use crate::catalog::SkillResourceId;
 use crate::catalog::SkillSearchResult;
 use crate::catalog::SkillSourceKind;
-use crate::loader::load_environment_skills_from_discovery;
-use crate::loader::load_environment_skills_from_root;
+use crate::loader::load_environment_skills_from_discovery_with_rules;
+use crate::loader::load_environment_skills_from_root_with_rules;
 use crate::provider::MAX_SKILL_RESOURCE_CONTENT_BYTES;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillProvider;
@@ -82,10 +82,10 @@ impl SkillProvider for ExecutorSkillProvider {
     fn list<'a>(&'a self, query: SkillListQuery<'a>) -> SkillProviderFuture<'a, SkillCatalog> {
         Box::pin(async move {
             if let Some(snapshots) = &query.executor_capability_discovery_v2 {
-                return Ok(self.list_from_discovery_v2(snapshots));
+                return Ok(self.list_from_discovery_v2(snapshots, &query.skill_config_rules));
             }
             if let Some(discovery) = query.executor_capability_discovery {
-                return Ok(self.list_from_discovery(&discovery));
+                return Ok(self.list_from_discovery(&discovery, &query.skill_config_rules));
             }
             let mut catalog = SkillCatalog::default();
             for bound in query.executor_roots {
@@ -98,18 +98,23 @@ impl SkillProvider for ExecutorSkillProvider {
                 } = &selected_root.location;
                 let authority =
                     SkillAuthority::new(SkillSourceKind::Executor, selected_root_id.clone());
-                let outcome =
-                    load_environment_skills_from_root(fs, path, self.restriction_product).await;
+                let outcome = load_environment_skills_from_root_with_rules(
+                    fs,
+                    path,
+                    self.restriction_product,
+                    &query.skill_config_rules,
+                )
+                .await;
                 catalog.warnings.extend(outcome.warnings);
                 for skill in outcome.skills {
                     catalog.push_entry(catalog_entry_from_skill(
                         &skill,
                         authority.clone(),
-                        selected_root_id,
                         path,
                         environment_id,
                         /*instructions*/ None,
                         &self.disabled_skill_paths,
+                        &query.skill_config_rules,
                     ));
                 }
             }
@@ -174,6 +179,7 @@ impl ExecutorSkillProvider {
     fn list_from_discovery(
         &self,
         snapshot: &codex_exec_server::ExecutorCapabilityDiscoverySnapshot,
+        rules: &codex_config::SkillConfigRules,
     ) -> SkillCatalog {
         let mut catalog = SkillCatalog::default();
         for root in snapshot.roots() {
@@ -193,8 +199,11 @@ impl ExecutorSkillProvider {
                 }
             };
             catalog.is_partial |= discovery.error.is_some();
-            let outcome =
-                load_environment_skills_from_discovery(discovery, self.restriction_product);
+            let outcome = load_environment_skills_from_discovery_with_rules(
+                discovery,
+                self.restriction_product,
+                rules,
+            );
             catalog.warnings.extend(outcome.warnings);
             let authority =
                 SkillAuthority::new(SkillSourceKind::Executor, selected_root_id.clone());
@@ -202,11 +211,11 @@ impl ExecutorSkillProvider {
                 catalog.push_entry(catalog_entry_from_skill(
                     &skill.metadata,
                     authority.clone(),
-                    selected_root_id,
                     path,
                     environment_id,
                     Some(skill.instructions),
                     &self.disabled_skill_paths,
+                    rules,
                 ));
             }
         }
@@ -217,12 +226,13 @@ impl ExecutorSkillProvider {
 fn catalog_entry_from_skill(
     skill: &EnvironmentSkillMetadata,
     authority: SkillAuthority,
-    selected_root_id: &str,
     selected_root_path: &PathUri,
     environment_id: &str,
     instructions: Option<String>,
     disabled_skill_paths: &HashMap<String, HashSet<PathUri>>,
+    rules: &codex_config::SkillConfigRules,
 ) -> SkillCatalogEntry {
+    let selected_root_id = &authority.id;
     let handle_prefix = format!("skill://{selected_root_id}/");
     let alias_root = format!(
         "{handle_prefix}{}",
@@ -266,9 +276,12 @@ fn catalog_entry_from_skill(
     .with_alias_root(alias_root)
     .with_dependencies(skill.dependencies.clone());
 
-    if disabled_skill_paths
-        .get(environment_id)
-        .is_some_and(|paths| paths.contains(&skill.path_to_skills_md))
+    if rules
+        .resolve_disabled_paths([(skill.name.as_str(), &skill.path_to_skills_md)])
+        .contains(&skill.path_to_skills_md)
+        || disabled_skill_paths
+            .get(environment_id)
+            .is_some_and(|paths| paths.contains(&skill.path_to_skills_md))
     {
         entry = entry.disabled();
     }

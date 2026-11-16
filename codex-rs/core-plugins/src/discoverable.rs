@@ -1,7 +1,6 @@
 use anyhow::Context;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
-use codex_config::skill_config_rules_from_stack;
 use codex_login::CodexAuth;
 use codex_plugin::PluginId;
 use std::collections::HashSet;
@@ -95,7 +94,7 @@ impl PluginsManager {
         } else {
             None
         };
-        let skill_config_rules = skill_config_rules_from_stack(&input.plugins.config_layer_stack);
+        let skill_config_rules = input.plugins.skill_config_rules();
 
         let mut discoverable_plugins = Vec::<ToolSuggestDiscoverablePlugin>::new();
         for marketplace in marketplaces {

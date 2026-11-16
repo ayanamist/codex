@@ -552,6 +552,18 @@ impl ConfigDocument {
                 }
             };
 
+            // Accept the inline array syntax without dropping existing policy fields.
+            if let Some(array) = config_item.as_value().and_then(|value| value.as_array()) {
+                let mut tables = ArrayOfTables::new();
+                for entry in array {
+                    let Some(table) = entry.as_inline_table() else {
+                        return false;
+                    };
+                    tables.push(table.clone().into_table());
+                }
+                *config_item = TomlItem::ArrayOfTables(tables);
+            }
+
             if !matches!(config_item, TomlItem::ArrayOfTables(_)) {
                 if enabled {
                     return false;
@@ -563,15 +575,28 @@ impl ConfigDocument {
                 return false;
             };
 
-            let existing_index = overrides.iter().enumerate().find_map(|(idx, table)| {
-                skill_config_selector_from_table(table)
-                    .filter(|value| value == &selector)
-                    .map(|_| idx)
-            });
+            let matching_indices = overrides
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, table)| {
+                    skill_config_selector_from_table(table)
+                        .filter(|value| value == &selector)
+                        .map(|_| idx)
+                })
+                .collect::<Vec<_>>();
+            let existing_index = matching_indices.last().copied();
 
             if enabled {
                 if let Some(index) = existing_index {
-                    overrides.remove(index);
+                    if let Some(table) = overrides
+                        .iter_mut()
+                        .nth(index)
+                        .filter(|table| table.contains_key("policy") || matching_indices.len() > 1)
+                    {
+                        table["enabled"] = value(true);
+                    } else {
+                        overrides.remove(index);
+                    }
                     mutated = true;
                     if overrides.is_empty() {
                         skills_table.remove("config");

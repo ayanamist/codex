@@ -25,6 +25,7 @@ impl<C: Send + Sync + 'static> SkillsExtension<C> {
         }
         let config = state.config();
         let query = SkillListQuery {
+            skill_config_rules: Default::default(),
             turn_id: input.turn_id.to_string(),
             executor_roots: Vec::new(),
             host_snapshot: None,

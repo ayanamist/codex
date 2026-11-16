@@ -16,6 +16,7 @@ workspace = true
 blake3 = { workspace = true }
 codex-analytics = { workspace = true }
 codex-config = { workspace = true }
+codex-git-utils = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-mcp = { workspace = true }

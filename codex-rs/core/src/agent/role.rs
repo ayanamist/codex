@@ -101,7 +101,12 @@ async fn apply_role_to_config_inner(
         }
     }
     if let Some(mut skills) = role_config.skills {
-        skills.config.retain(|skill| !skill.enabled);
+        skills.config.retain(|skill| skill.enabled == Some(false));
+        // Roles retain the existing disable-only authority; local policy overrides
+        // come from the parent user/workspace/session configuration.
+        for skill in &mut skills.config {
+            skill.policy = None;
+        }
         skills.bundled = skills.bundled.filter(|bundled| !bundled.enabled);
         skills.include_instructions = skills.include_instructions.filter(|enabled| !enabled);
         skills.max_context_tokens = None;

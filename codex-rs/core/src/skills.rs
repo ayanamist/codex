@@ -43,6 +43,7 @@ pub(crate) fn skills_load_input_from_config(
         effective_skill_roots,
         config.config_layer_stack.clone(),
     )
+    .with_project_config(config.active_project.clone())
 }
 
 /// Pair repository discovery inputs with their captured filesystem owner.
@@ -70,6 +71,7 @@ pub(crate) fn skills_load_input_for_environments<'a>(
         effective_skill_roots,
         config.config_layer_stack.clone(),
     )
+    .with_project_config(config.active_project.clone())
     .with_plugin_skill_snapshots(
         plugins_manager.plugin_skill_snapshots_for_config(&config.plugins_config_input()),
     );

@@ -105,6 +105,21 @@ pub struct EnvironmentSkillLoadOutcome {
     pub warnings: Vec<String>,
 }
 
+#[cfg(test)]
+pub async fn load_environment_skills_from_root(
+    file_system: &dyn EnvironmentAccess,
+    root: &PathUri,
+    restriction_product: Option<Product>,
+) -> EnvironmentSkillLoadOutcome {
+    load_environment_skills_from_root_with_rules(
+        file_system,
+        root,
+        restriction_product,
+        &codex_config::SkillConfigRules::default(),
+    )
+    .await
+}
+
 /// Discovers skills without converting environment-owned paths to host paths.
 #[tracing::instrument(
     name = "skills.environment.load",
@@ -112,10 +127,11 @@ pub struct EnvironmentSkillLoadOutcome {
     skip_all,
     fields(skill_count = tracing::field::Empty)
 )]
-pub async fn load_environment_skills_from_root(
+pub(crate) async fn load_environment_skills_from_root_with_rules(
     file_system: &dyn EnvironmentAccess,
     root: &PathUri,
     restriction_product: Option<Product>,
+    rules: &codex_config::SkillConfigRules,
 ) -> EnvironmentSkillLoadOutcome {
     let mut outcome = EnvironmentSkillLoadOutcome::default();
     // Preserve environment discovery behavior by following directory aliases and including
@@ -183,10 +199,12 @@ pub async fn load_environment_skills_from_root(
             })
         });
         match result {
-            Ok(skill) if skill.matches_product_restriction(restriction_product) => {
-                outcome.skills.push(skill);
+            Ok(mut skill) => {
+                rules.apply_policy(&skill.name, &skill.path_to_skills_md, &mut skill.policy);
+                if skill.matches_product_restriction(restriction_product) {
+                    outcome.skills.push(skill);
+                }
             }
-            Ok(_) => {}
             Err(message) => outcome.warnings.push(format!(
                 "Failed to load environment skill at {path}: {message}"
             )),
@@ -203,9 +221,22 @@ pub async fn load_environment_skills_from_root(
 }
 
 /// Parses an executor-produced manifest bundle without issuing additional filesystem requests.
+#[cfg(test)]
 pub fn load_environment_skills_from_discovery(
     discovery: &CapabilityRootDiscovery,
     restriction_product: Option<Product>,
+) -> EnvironmentSkillSnapshotOutcome {
+    load_environment_skills_from_discovery_with_rules(
+        discovery,
+        restriction_product,
+        &codex_config::SkillConfigRules::default(),
+    )
+}
+
+pub(crate) fn load_environment_skills_from_discovery_with_rules(
+    discovery: &CapabilityRootDiscovery,
+    restriction_product: Option<Product>,
+    rules: &codex_config::SkillConfigRules,
 ) -> EnvironmentSkillSnapshotOutcome {
     let mut outcome = EnvironmentSkillSnapshotOutcome {
         warnings: discovery.warnings.clone(),
@@ -286,7 +317,7 @@ pub fn load_environment_skills_from_discovery(
             ));
             continue;
         }
-        let metadata = EnvironmentSkillMetadata {
+        let mut metadata = EnvironmentSkillMetadata {
             path_to_skills_md: skill.instructions.path.clone(),
             name,
             description,
@@ -294,6 +325,11 @@ pub fn load_environment_skills_from_discovery(
             dependencies,
             policy,
         };
+        rules.apply_policy(
+            &metadata.name,
+            &metadata.path_to_skills_md,
+            &mut metadata.policy,
+        );
         if metadata.matches_product_restriction(restriction_product) {
             outcome.skills.push(EnvironmentSkillSnapshot {
                 metadata,

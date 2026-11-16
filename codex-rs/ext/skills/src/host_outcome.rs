@@ -22,6 +22,7 @@ use crate::loader::canonicalize_for_skill_identity;
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillLoadOutcome {
+    pub(crate) config_rules: codex_config::SkillConfigRules,
     pub skills: Vec<SkillMetadata>,
     pub errors: Vec<SkillError>,
     pub disabled_paths: HashSet<PathUri>,

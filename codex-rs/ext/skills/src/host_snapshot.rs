@@ -24,6 +24,10 @@ impl HostSkillsSnapshot {
             .or_else(|| turn_store.get::<Self>())
     }
 
+    pub fn config_rules(&self) -> &codex_config::SkillConfigRules {
+        &self.outcome.config_rules
+    }
+
     pub fn outcome(&self) -> &SkillLoadOutcome {
         self.outcome.as_ref()
     }

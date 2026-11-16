@@ -1061,3 +1061,139 @@ async fn skills_for_config_ignores_cwd_cache_when_session_flags_reenable_skill()
         .expect("demo skill should be discovered");
     assert_eq!(child_outcome.is_skill_enabled(child_skill), true);
 }
+
+#[tokio::test]
+async fn workspace_policy_overrides_preserve_explicit_selection_and_isolate_shared_snapshots() {
+    use crate::provider::SkillProvider;
+    use codex_protocol::protocol::Product;
+    use codex_protocol::user_input::UserInput;
+    let home = tempfile::tempdir().unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    write_user_skill(&home, "research", "research", "Research a topic");
+    let metadata = home.path().join("skills/research/agents");
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(
+        metadata.join("openai.yaml"),
+        "policy:\n  allow_implicit_invocation: false\n  products: [chatgpt]\n",
+    )
+    .unwrap();
+    let config = format!(
+        r#"
+[skills.bundled]
+enabled = false
+[[skills.config]]
+name = "research"
+enabled = false
+policy = {{ allow_implicit_invocation = true, products = ["codex"] }}
+[projects.{first}]
+skills.config = [{{ name = "research", enabled = true, policy = {{ allow_implicit_invocation = false }} }}]
+[projects.{second}]
+skills.config = [{{ name = "research", enabled = true, policy = {{ products = [] }} }}]
+"#,
+        first = toml::Value::String(first.path().display().to_string()),
+        second = toml::Value::String(second.path().display().to_string())
+    );
+    let stack = config_stack(&home, &config);
+    let service = HostSkillsService::new(home.path().abs(), false);
+    let request = service.for_request();
+    let input = |cwd: &TempDir| HostSkillsLoadInput::new(cwd.path().abs(), vec![], stack.clone());
+    let a = request
+        .snapshot_for_cwd(&input(&first), false, Some(Arc::clone(&LOCAL_FS)))
+        .await;
+    let b = request
+        .snapshot_for_cwd(&input(&second), false, Some(Arc::clone(&LOCAL_FS)))
+        .await;
+    for (snapshot, implicit, products) in [(&a, false, vec![Product::Codex]), (&b, true, vec![])] {
+        let skill = &snapshot.outcome().skills[0];
+        assert_eq!(skill.name, "research");
+        assert!(snapshot.outcome().is_skill_enabled(skill));
+        assert_eq!(skill.allows_implicit_invocation(), implicit);
+        assert_eq!(skill.policy.as_ref().unwrap().products, products);
+        let inputs = [UserInput::Text {
+            text: "$research".into(),
+            text_elements: vec![],
+        }];
+        assert_eq!(
+            codex_skills::collect_explicit_skill_mentions(
+                &inputs,
+                snapshot.outcome(),
+                &HashMap::new()
+            ),
+            vec![skill.clone()]
+        );
+        assert!(
+            snapshot
+                .read_skill_text(skill, &[])
+                .await
+                .unwrap()
+                .contains("# Body")
+        );
+        let catalog = crate::HostSkillProvider::new()
+            .list(crate::provider::SkillListQuery {
+                skill_config_rules: snapshot.config_rules().clone(),
+                turn_id: "policy-test".into(),
+                executor_roots: vec![],
+                host_snapshot: Some(Arc::new(snapshot.clone())),
+                include_host_skills: true,
+                include_bundled_skills: false,
+                include_cloud_skills: false,
+                mcp_resources: None,
+                executor_capability_discovery: None,
+                executor_capability_discovery_v2: None,
+            })
+            .await
+            .unwrap();
+        assert!(catalog.entries[0].enabled);
+        assert_eq!(catalog.entries[0].prompt_visible, implicit);
+    }
+    // Applying b's policy to a shared discovery snapshot must not mutate a.
+    assert!(!a.outcome().skills[0].allows_implicit_invocation());
+    let changed = config_stack(
+        &home,
+        &config.replace(
+            "allow_implicit_invocation = false",
+            "allow_implicit_invocation = true",
+        ),
+    );
+    let changed_input = HostSkillsLoadInput::new(first.path().abs(), vec![], changed);
+    let c = request
+        .snapshot_for_cwd(&changed_input, false, Some(Arc::clone(&LOCAL_FS)))
+        .await;
+    assert!(c.outcome().skills[0].allows_implicit_invocation());
+    assert!(!a.outcome().skills[0].allows_implicit_invocation());
+}
+
+#[tokio::test]
+async fn project_skill_rules_follow_repository_root_from_subdirectory() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    fs::create_dir_all(repo.path().join(".git")).unwrap();
+    fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    write_user_skill(&home, "research", "research", "Research a topic");
+    let root = toml::Value::String(repo.path().display().to_string());
+    let stack = config_stack(
+        &home,
+        &format!(
+            r#"
+[skills.bundled]
+enabled = false
+[projects.{root}]
+skills.config = [{{ name = "research", policy = {{ allow_implicit_invocation = false }} }}]
+"#
+        ),
+    );
+    let service = HostSkillsService::new(home.path().abs(), false);
+    let input = HostSkillsLoadInput::new(repo.path().join("src").abs(), vec![], stack);
+    let snapshot = service
+        .snapshot_for_config_on_executor(
+            &input,
+            Some((
+                &LOCAL_FS,
+                &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+            )),
+        )
+        .await;
+    assert!(!snapshot.outcome().skills[0].allows_implicit_invocation());
+}

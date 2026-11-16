@@ -103,6 +103,7 @@ impl std::fmt::Debug for CloudSkillGeneration {
 /// Reuses the projection of unchanged successful V2 inventories, before plugin policy.
 #[derive(Clone, Debug)]
 pub(crate) struct CachedExecutorV2Catalog {
+    pub(crate) skill_config_rules: codex_config::SkillConfigRules,
     pub(crate) snapshots: Vec<codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot>,
     pub(crate) catalog: SkillCatalog,
 }
@@ -123,6 +124,7 @@ impl CachedExecutorV2Catalog {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutorCatalogCacheKey {
+    pub(crate) skill_config_rules: codex_config::SkillConfigRules,
     pub(crate) turn_id: String,
     pub(crate) roots: Vec<(SelectedCapabilityRoot, EnvironmentAccessKey)>,
     pub(crate) include_bundled_skills: bool,
@@ -130,7 +132,8 @@ pub(crate) struct ExecutorCatalogCacheKey {
 
 impl ExecutorCatalogCacheKey {
     pub(crate) fn matches(&self, query: &crate::provider::SkillListQuery<'_>) -> bool {
-        self.turn_id == query.turn_id
+        self.skill_config_rules == query.skill_config_rules
+            && self.turn_id == query.turn_id
             && self.include_bundled_skills == query.include_bundled_skills
             && self.roots.len() == query.executor_roots.len()
             && self
@@ -152,6 +155,7 @@ pub(crate) struct CachedExecutorCatalog {
 /// Keeps the latest result; only successful results for unchanged inputs can be reused.
 #[derive(Clone, Debug)]
 pub(crate) struct CachedExecutorDiscoveryCatalog {
+    pub(crate) skill_config_rules: codex_config::SkillConfigRules,
     pub(crate) discovery: ExecutorCapabilityDiscoverySnapshot,
     pub(crate) include_bundled_skills: bool,
     pub(crate) catalog: SkillCatalog,

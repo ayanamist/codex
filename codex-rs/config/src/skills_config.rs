@@ -5,6 +5,9 @@ use std::num::NonZeroUsize;
 
 use crate::ConfigLayerSource;
 use crate::ConfigLayerStack;
+use crate::config_toml::ProjectConfig;
+use codex_protocol::protocol::Product;
+use codex_skills::SkillPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
@@ -25,7 +28,28 @@ pub struct SkillConfig {
     /// Name-based selector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<SkillPolicyOverride>,
+}
+
+/// Field-level overrides; absence inherits and an empty products list removes restrictions.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SkillPolicyOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_implicit_invocation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub products: Option<Vec<Product>>,
+}
+
+/// Per-project skill rules stored alongside the existing project trust setting.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSkillsConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config: Vec<SkillConfig>,
 }
 
 /// Skills required from one environment or plugin before inference.
@@ -87,7 +111,8 @@ pub enum SkillConfigRuleSelector {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SkillConfigRule {
     pub selector: SkillConfigRuleSelector,
-    pub enabled: bool,
+    pub enabled: Option<bool>,
+    pub policy: Option<SkillPolicyOverride>,
 }
 
 /// Ordered effective skill enablement rules from configuration layers.
@@ -97,6 +122,29 @@ pub struct SkillConfigRules {
 }
 
 impl SkillConfigRules {
+    /// Applies only explicitly configured policy fields, in matching-rule order.
+    pub fn apply_policy(&self, name: &str, path: &PathUri, policy: &mut Option<SkillPolicy>) {
+        for entry in &self.entries {
+            let matches = match &entry.selector {
+                SkillConfigRuleSelector::Name(selector) => selector == name,
+                SkillConfigRuleSelector::Path(selector) => selector == path,
+            };
+            let Some(overrides) = entry.policy.as_ref().filter(|_| matches) else {
+                continue;
+            };
+            if overrides.allow_implicit_invocation.is_none() && overrides.products.is_none() {
+                continue;
+            }
+            let policy = policy.get_or_insert_with(SkillPolicy::default);
+            if let Some(value) = overrides.allow_implicit_invocation {
+                policy.allow_implicit_invocation = Some(value);
+            }
+            if let Some(value) = &overrides.products {
+                policy.products.clone_from(value);
+            }
+        }
+    }
+
     /// Applies rules in order; later rules override earlier rules for matching skills.
     ///
     /// Explicit path selectors remain effective even when no current skill matches.
@@ -107,9 +155,12 @@ impl SkillConfigRules {
         let mut disabled_paths = HashSet::new();
 
         for entry in &self.entries {
+            let Some(enabled) = entry.enabled else {
+                continue;
+            };
             match &entry.selector {
                 SkillConfigRuleSelector::Path(path) => {
-                    if entry.enabled {
+                    if enabled {
                         disabled_paths.remove(path);
                     } else {
                         disabled_paths.insert(path.clone());
@@ -120,7 +171,7 @@ impl SkillConfigRules {
                         if skill_name != name {
                             continue;
                         }
-                        if entry.enabled {
+                        if enabled {
                             disabled_paths.remove(path);
                         } else {
                             disabled_paths.insert(path.clone());
@@ -157,41 +208,101 @@ pub fn bundled_skills_enabled_from_stack(config_layer_stack: &ConfigLayerStack) 
 
 /// Resolves skill enablement rules from user and session configuration layers.
 pub fn skill_config_rules_from_stack(config_layer_stack: &ConfigLayerStack) -> SkillConfigRules {
-    let mut entries = Vec::new();
-    for layer in config_layer_stack.all_layers_low_to_high() {
-        if !matches!(
-            layer.name,
-            ConfigLayerSource::User { .. } | ConfigLayerSource::SessionFlags
-        ) {
-            continue;
-        }
+    skill_config_rules_with_project(config_layer_stack, None)
+}
 
-        let Some(skills_value) = layer.config.get("skills") else {
-            continue;
-        };
-        let skills: SkillsConfig = match skills_value.clone().try_into() {
-            Ok(skills) => skills,
-            Err(err) => {
-                warn!("invalid skills config: {err}");
+/// Global rules, then the selected project's rules, then session flags.
+/// Keep all entries: dropping a repeated selector would lose omitted-field inheritance
+/// and can change ordering relative to a different matching selector.
+pub fn skill_config_rules_with_project(
+    config_layer_stack: &ConfigLayerStack,
+    project: Option<&ProjectConfig>,
+) -> SkillConfigRules {
+    let mut rules = SkillConfigRules::default();
+    for session in [false, true] {
+        if session && let Some(skills) = project.and_then(|project| project.skills.as_ref()) {
+            append_rules(&mut rules, skills.config.clone());
+        }
+        for layer in config_layer_stack.all_layers_low_to_high() {
+            let applies = if session {
+                matches!(layer.name, ConfigLayerSource::SessionFlags)
+            } else {
+                matches!(layer.name, ConfigLayerSource::User { .. })
+            };
+            if !applies {
                 continue;
             }
-        };
-
-        for entry in skills.config {
-            let Some(selector) = skill_config_rule_selector(&entry) else {
+            let Some(skills_value) = layer.config.get("skills") else {
                 continue;
             };
-            // Preserve layer order so a later name selector can override an earlier path selector
-            // for the same loaded skill.
-            entries.retain(|entry: &SkillConfigRule| entry.selector != selector);
-            entries.push(SkillConfigRule {
-                selector,
-                enabled: entry.enabled,
-            });
+            match skills_value.clone().try_into() {
+                Ok(SkillsConfig { config, .. }) => append_rules(&mut rules, config),
+                Err(err) => warn!("invalid skills config: {err}"),
+            }
         }
     }
+    rules
+}
 
-    SkillConfigRules { entries }
+fn append_rules(rules: &mut SkillConfigRules, config: Vec<SkillConfig>) {
+    for entry in config {
+        let Some(selector) = skill_config_rule_selector(&entry) else {
+            continue;
+        };
+        rules.entries.push(SkillConfigRule {
+            selector,
+            enabled: entry.enabled,
+            policy: entry.policy,
+        });
+    }
+}
+
+/// Reuses the existing cwd/canonical/repository-root project selection contract.
+/// Only user and session layers supply local project skill overrides.
+pub fn skill_project_for_cwd(
+    stack: &ConfigLayerStack,
+    cwd: &std::path::Path,
+    repo_root: Option<&std::path::Path>,
+) -> Option<ProjectConfig> {
+    let mut projects = toml::Value::Table(Default::default());
+    for layer in stack.all_layers_low_to_high() {
+        if matches!(
+            layer.name,
+            ConfigLayerSource::User { .. } | ConfigLayerSource::SessionFlags
+        ) && let Some(value) = layer.config.get("projects")
+        {
+            let mut overlay = value.clone();
+            if let Some(entries) = overlay.as_table_mut() {
+                for (key, project) in entries {
+                    let previous = projects.get(key).and_then(project_skill_entries);
+                    let current = project
+                        .get_mut("skills")
+                        .and_then(|skills| skills.get_mut("config"))
+                        .and_then(toml::Value::as_array_mut);
+                    if let (Some(previous), Some(current)) = (previous, current) {
+                        *current = previous.iter().chain(current.iter()).cloned().collect();
+                    }
+                }
+            }
+            crate::merge_toml_values(&mut projects, &overlay);
+        }
+    }
+    let projects = match projects.try_into() {
+        Ok(projects) => projects,
+        Err(err) => {
+            warn!("invalid project skills config: {err}");
+            return None;
+        }
+    };
+    crate::config_toml::ConfigToml {
+        projects: Some(projects),
+        ..Default::default()
+    }
+    .get_active_project(cwd, repo_root)
+}
+
+fn project_skill_entries(project: &toml::Value) -> Option<&Vec<toml::Value>> {
+    project.get("skills")?.get("config")?.as_array()
 }
 
 fn skill_config_rule_selector(entry: &SkillConfig) -> Option<SkillConfigRuleSelector> {

@@ -96,6 +96,7 @@ async fn write_project_trust_config(
                             project.to_string_lossy().to_string(),
                             ProjectConfig {
                                 trust_level: Some(*trust_level),
+                                skills: None,
                             },
                         )
                     })

@@ -125,6 +125,7 @@ async fn concurrent_plugin_loads_preserve_mcp_precedence_and_hook_warnings() {
     };
     let loaded = load_plugins_from_layer_stack(
         &stack,
+        None,
         &config.plugins,
         RemoteInstalledPluginsSnapshot::default(),
         &store,
@@ -428,6 +429,7 @@ async fn installed_agent_plugin_uses_isolated_data_root_for_stdio_mcp() {
 
     let plugins = load_plugins_from_layer_stack(
         &stack,
+        None,
         &stack
             .effective_config()
             .try_into::<codex_config::config_toml::ConfigToml>()
@@ -710,6 +712,7 @@ enabled = true
 
     let full = load_plugins_from_layer_stack(
         &stack,
+        None,
         &stack
             .effective_config()
             .try_into::<codex_config::config_toml::ConfigToml>()
@@ -813,6 +816,7 @@ enabled = true
             .plugins;
         let plugins = load_plugins_from_layer_stack(
             &stack,
+            None,
             &policy,
             RemoteInstalledPluginsSnapshot::default(),
             &store,
@@ -1192,5 +1196,79 @@ fn materialize_git_source_rejects_sha_that_resolves_to_hostile_default_branch() 
     assert_eq!(
         err,
         format!("checked out Git SHA {malicious_sha} does not match requested SHA {benign_sha}")
+    );
+}
+
+#[test]
+fn plugin_inventory_applies_policy_before_products_and_keeps_raw_inventory() {
+    use codex_config::SkillConfigRule;
+    use codex_config::SkillConfigRuleSelector;
+    use codex_config::SkillPolicyOverride;
+    use codex_skills::SkillPolicy;
+    let inventory = PluginSkillInventory {
+        skills: vec![SkillMetadata {
+            name: "example:research".into(),
+            description: "Research".into(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            policy: Some(SkillPolicy {
+                allow_implicit_invocation: Some(true),
+                products: vec![Product::Chatgpt],
+            }),
+            path_to_skills_md: PathUri::parse("file:///plugins/example/skills/research/SKILL.md")
+                .unwrap(),
+            scope: codex_protocol::protocol::SkillScope::User,
+            plugin_id: Some("example@test".into()),
+            remote_plugin_id: None,
+        }],
+        restriction_product: Some(Product::Codex),
+        migrated_command_root: None,
+        had_errors: false,
+    };
+    assert!(!inventory.has_enabled_skills(&SkillConfigRules::default()));
+    let rules = SkillConfigRules {
+        entries: vec![SkillConfigRule {
+            selector: SkillConfigRuleSelector::Name("example:research".into()),
+            enabled: None,
+            policy: Some(SkillPolicyOverride {
+                allow_implicit_invocation: Some(false),
+                products: Some(vec![]),
+            }),
+        }],
+    };
+    assert!(inventory.has_enabled_skills(&rules));
+    assert_eq!(
+        inventory.skills[0].policy.as_ref().unwrap().products,
+        vec![Product::Chatgpt]
+    );
+    let mut migrated = inventory.skills[0].clone();
+    let migrated_root = PathUri::parse("file:///plugins/example/migrated").unwrap();
+    migrated.path_to_skills_md = migrated_root.join("research/SKILL.md").unwrap();
+    migrated.description = "Migrated command".into();
+    migrated.policy = None;
+    let shadowed = PluginSkillInventory {
+        skills: vec![inventory.skills[0].clone(), migrated],
+        restriction_product: Some(Product::Codex),
+        migrated_command_root: Some(migrated_root),
+        had_errors: false,
+    };
+    assert_eq!(
+        shadowed.effective_skills(&SkillConfigRules::default())[0].description,
+        "Migrated command"
+    );
+    let widened = shadowed.effective_skills(&rules);
+    assert_eq!(widened.len(), 1);
+    assert_eq!(widened[0].description, "Research");
+    let resolved = inventory.resolve(&rules);
+    assert!(resolved.has_enabled_skills());
+    assert!(!resolved.skills[0].allows_implicit_invocation());
+    assert!(
+        resolved.skills[0]
+            .policy
+            .as_ref()
+            .unwrap()
+            .products
+            .is_empty()
     );
 }

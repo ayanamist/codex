@@ -643,6 +643,12 @@ async fn apply_role_skills_config_disables_skill_for_spawned_agent() {
         "---\nname: demo-skill\ndescription: demo description\n---\n\n# Body\n",
     )
     .expect("write skill");
+    fs::create_dir_all(skill_dir.join("agents")).unwrap();
+    fs::write(
+        skill_dir.join("agents/openai.yaml"),
+        "policy:\n  allow_implicit_invocation: false\n  products: [codex]\n",
+    )
+    .unwrap();
     let role_path = write_role_config(
         &home,
         "skills-role.toml",
@@ -652,6 +658,11 @@ async fn apply_role_skills_config_disables_skill_for_spawned_agent() {
 [[skills.config]]
 path = "{}"
 enabled = false
+policy = {{ allow_implicit_invocation = true, products = [] }}
+
+[[skills.config]]
+name = "demo-skill"
+policy = {{ allow_implicit_invocation = true, products = [] }}
 "#,
             skill_path.display()
         ),
@@ -700,6 +711,11 @@ enabled = false
         .expect("demo skill should be discovered");
 
     assert_eq!(outcome.is_skill_enabled(skill), false);
+    assert!(!skill.allows_implicit_invocation());
+    assert_eq!(
+        skill.policy.as_ref().unwrap().products,
+        vec![codex_protocol::protocol::Product::Codex]
+    );
 }
 
 #[test]

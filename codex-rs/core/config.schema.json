@@ -4263,6 +4263,14 @@
       ],
       "type": "object"
     },
+    "Product": {
+      "enum": [
+        "chatgpt",
+        "codex",
+        "atlas"
+      ],
+      "type": "string"
+    },
     "ProfileTui": {
       "additionalProperties": false,
       "description": "TUI settings supported inside a named profile.",
@@ -4282,8 +4290,24 @@
     "ProjectConfig": {
       "additionalProperties": false,
       "properties": {
+        "skills": {
+          "$ref": "#/definitions/ProjectSkillsConfig"
+        },
         "trust_level": {
           "$ref": "#/definitions/TrustLevel"
+        }
+      },
+      "type": "object"
+    },
+    "ProjectSkillsConfig": {
+      "additionalProperties": false,
+      "description": "Per-project skill rules stored alongside the existing project trust setting.",
+      "properties": {
+        "config": {
+          "items": {
+            "$ref": "#/definitions/SkillConfig"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -4922,11 +4946,27 @@
             }
           ],
           "description": "Path-based selector."
+        },
+        "policy": {
+          "$ref": "#/definitions/SkillPolicyOverride"
         }
       },
-      "required": [
-        "enabled"
-      ],
+      "type": "object"
+    },
+    "SkillPolicyOverride": {
+      "additionalProperties": false,
+      "description": "Field-level overrides; absence inherits and an empty products list removes restrictions.",
+      "properties": {
+        "allow_implicit_invocation": {
+          "type": "boolean"
+        },
+        "products": {
+          "items": {
+            "$ref": "#/definitions/Product"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "SkillsConfig": {

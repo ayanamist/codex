@@ -141,6 +141,7 @@ pub(crate) fn log_plugin_load_errors(plugins: &[LoadedPlugin<McpServerConfig>]) 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn load_plugins_from_layer_stack(
     config_layer_stack: &ConfigLayerStack,
+    skill_config_rules: Option<&SkillConfigRules>,
     plugin_policy: &codex_config::types::PluginsConfigToml,
     remote_installed_plugins_snapshot: RemoteInstalledPluginsSnapshot,
     store: &PluginStore,
@@ -149,7 +150,9 @@ pub(crate) async fn load_plugins_from_layer_stack(
     remote_global_catalog_active: bool,
     skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
 ) -> Vec<LoadedPlugin<McpServerConfig>> {
-    let skill_config_rules = skill_config_rules_from_stack(config_layer_stack);
+    let skill_config_rules = skill_config_rules
+        .cloned()
+        .unwrap_or_else(|| skill_config_rules_from_stack(config_layer_stack));
     let RemoteInstalledPluginsSnapshot {
         configs: extra_plugins,
         remote_plugin_id_resolver,
@@ -1023,15 +1026,44 @@ fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginM
 
 pub(crate) struct PluginSkillInventory {
     skills: Vec<SkillMetadata>,
+    restriction_product: Option<Product>,
+    migrated_command_root: Option<PathUri>,
     had_errors: bool,
 }
 
 impl PluginSkillInventory {
+    fn effective_skills(&self, rules: &SkillConfigRules) -> Vec<SkillMetadata> {
+        let mut skills = self
+            .skills
+            .iter()
+            .cloned()
+            .filter_map(|mut skill| {
+                rules.apply_policy(&skill.name, &skill.path_to_skills_md, &mut skill.policy);
+                skill
+                    .matches_product_restriction_for_product(self.restriction_product)
+                    .then_some(skill)
+            })
+            .collect::<Vec<_>>();
+        // Product policy can change which native skills shadow migrated commands.
+        if let Some(root) = &self.migrated_command_root {
+            let native_names = skills
+                .iter()
+                .filter(|skill| !skill.path_to_skills_md.starts_with(root))
+                .map(|skill| skill.name.clone())
+                .collect::<HashSet<_>>();
+            skills.retain(|skill| {
+                !skill.path_to_skills_md.starts_with(root) || !native_names.contains(&skill.name)
+            });
+        }
+        skills
+    }
+
     pub(crate) fn has_enabled_skills(&self, skill_config_rules: &SkillConfigRules) -> bool {
+        let skills = self.effective_skills(skill_config_rules);
         contains_enabled_skill(
-            &self.skills,
+            &skills,
             &skill_config_rules.resolve_disabled_paths(
-                self.skills
+                skills
                     .iter()
                     .map(|skill| (skill.name.as_str(), &skill.path_to_skills_md)),
             ),
@@ -1039,13 +1071,14 @@ impl PluginSkillInventory {
     }
 
     pub(crate) fn resolve(self, skill_config_rules: &SkillConfigRules) -> ResolvedPluginSkills {
+        let skills = self.effective_skills(skill_config_rules);
         let disabled_skill_paths = skill_config_rules.resolve_disabled_paths(
-            self.skills
+            skills
                 .iter()
                 .map(|skill| (skill.name.as_str(), &skill.path_to_skills_md)),
         );
         ResolvedPluginSkills {
-            skills: self.skills,
+            skills,
             disabled_skill_paths,
             had_errors: self.had_errors,
         }
@@ -1099,6 +1132,7 @@ pub(crate) async fn load_plugin_skill_inventory(
         .collect();
     let outcome = skill_root_loader
         .load_roots(SkillRootLoadRequest {
+            include_restricted_skills: true,
             roots,
             restriction_product,
             snapshots: plugin_skill_snapshots.cloned(),
@@ -1106,6 +1140,11 @@ pub(crate) async fn load_plugin_skill_inventory(
         .await;
 
     PluginSkillInventory {
+        migrated_command_root: (manifest_format == PluginManifestFormat::Legacy).then(|| {
+            let root = migrated_command_skills_root(plugin_root);
+            PathUri::from_abs_path(&root.canonicalize().unwrap_or(root))
+        }),
+        restriction_product,
         skills: outcome.skills,
         had_errors: !outcome.errors.is_empty(),
     }
@@ -1393,6 +1432,7 @@ pub(crate) async fn plugin_capability_summary_from_root(
                 skill_root_loader,
             )
             .await
+            .resolve(&SkillConfigRules::default())
             .skills
             .is_empty()
         }

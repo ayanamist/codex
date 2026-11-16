@@ -207,11 +207,13 @@ impl SkillRootLoader<PluginSkillRoot> for TestSkillRootLoader {
                     .skills
                     .extend(snapshot.skills.into_iter().filter(|skill| {
                         (!migrated
+                            || request.include_restricted_skills
                             || !native_names
                                 .contains(&(skill.plugin_id.clone(), skill.name.clone())))
-                            && skill.matches_product_restriction_for_product(
-                                request.restriction_product,
-                            )
+                            && (request.include_restricted_skills
+                                || skill.matches_product_restriction_for_product(
+                                    request.restriction_product,
+                                ))
                             && seen_paths.insert(skill.path_to_skills_md.clone())
                     }));
                 outcome.errors.extend(snapshot.errors);

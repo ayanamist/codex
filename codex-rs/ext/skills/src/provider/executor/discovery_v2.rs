@@ -18,6 +18,7 @@ impl ExecutorSkillProvider {
     pub(super) fn list_from_discovery_v2(
         &self,
         snapshots: &[ExecutorCapabilityDiscoveryV2Snapshot],
+        rules: &codex_config::SkillConfigRules,
     ) -> SkillCatalog {
         let mut catalog = SkillCatalog::default();
         for snapshot in snapshots {
@@ -40,6 +41,7 @@ impl ExecutorSkillProvider {
                         &plugin.id,
                         &plugin.root,
                         &snapshot.environment_id,
+                        rules,
                     ) else {
                         continue;
                     };
@@ -66,6 +68,7 @@ impl ExecutorSkillProvider {
                     root_id,
                     root_path,
                     &snapshot.environment_id,
+                    rules,
                 ) {
                     catalog.push_entry(entry);
                 }
@@ -80,8 +83,9 @@ impl ExecutorSkillProvider {
         root_id: &str,
         root: &PathUri,
         environment_id: &str,
+        rules: &codex_config::SkillConfigRules,
     ) -> Option<SkillCatalogEntry> {
-        let metadata = EnvironmentSkillMetadata {
+        let mut metadata = EnvironmentSkillMetadata {
             path_to_skills_md: skill.path.clone(),
             name: skill.name.clone(),
             description: skill.description.clone(),
@@ -89,17 +93,22 @@ impl ExecutorSkillProvider {
             dependencies: skill.dependencies.clone(),
             policy: skill.policy.clone(),
         };
+        rules.apply_policy(
+            &metadata.name,
+            &metadata.path_to_skills_md,
+            &mut metadata.policy,
+        );
         if !metadata.matches_product_restriction(self.restriction_product) {
             return None;
         }
         Some(catalog_entry_from_skill(
             &metadata,
             SkillAuthority::new(SkillSourceKind::Executor, root_id),
-            root_id,
             root,
             environment_id,
             /*instructions*/ None,
             &self.disabled_skill_paths,
+            rules,
         ))
     }
 }

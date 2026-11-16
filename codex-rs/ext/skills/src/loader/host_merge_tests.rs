@@ -544,3 +544,64 @@ async fn same_name_skills_preserve_native_path_order() {
         ]
     );
 }
+
+#[tokio::test]
+async fn policy_override_precedes_native_command_shadowing_and_raw_inventory_preserves_both() {
+    use crate::loader::load_and_merge_host_skill_roots_with_request_snapshots;
+    use codex_config::SkillConfigRule;
+    use codex_config::SkillConfigRuleSelector;
+    use codex_config::SkillConfigRules;
+    use codex_config::SkillPolicyOverride;
+    let fixture = PluginSkillsFixture::new();
+    let metadata = fixture.native_root.join("review/agents");
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(
+        metadata.join("openai.yaml"),
+        "policy:\n  products: [chatgpt]\n",
+    )
+    .unwrap();
+    let raw = load_and_merge_host_skill_roots_with_request_snapshots(
+        fixture.roots(),
+        &Semaphore::new(2),
+        Some(Product::Codex),
+        None,
+        None,
+        &SkillConfigRules::default(),
+        true,
+    )
+    .await;
+    assert_eq!(
+        raw.skills
+            .iter()
+            .filter(|skill| skill.name == "sample:source-command-review")
+            .count(),
+        2
+    );
+    let rules = SkillConfigRules {
+        entries: vec![SkillConfigRule {
+            selector: SkillConfigRuleSelector::Name("sample:source-command-review".into()),
+            enabled: None,
+            policy: Some(SkillPolicyOverride {
+                allow_implicit_invocation: None,
+                products: Some(vec![Product::Codex]),
+            }),
+        }],
+    };
+    let effective = load_and_merge_host_skill_roots_with_request_snapshots(
+        fixture.roots(),
+        &Semaphore::new(2),
+        Some(Product::Codex),
+        None,
+        None,
+        &rules,
+        false,
+    )
+    .await;
+    let reviews = effective
+        .skills
+        .iter()
+        .filter(|skill| skill.name == "sample:source-command-review")
+        .collect::<Vec<_>>();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0].description, "native");
+}

@@ -3032,6 +3032,7 @@ async fn missing_persisted_permission_profile_id_uses_configured_default() -> st
                     project_key.clone(),
                     ProjectConfig {
                         trust_level: Some(TrustLevel::Trusted),
+                        skills: None,
                     },
                 )])),
                 ..Default::default()
@@ -3912,6 +3913,7 @@ async fn empty_config_defaults_to_builtin_profile_for_trusted_project(
                 project_key,
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Trusted),
+                    skills: None,
                 },
             )])),
             ..Default::default()
@@ -3968,6 +3970,7 @@ async fn empty_config_defaults_to_builtin_profile_for_untrusted_project() -> std
                 project_key,
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Untrusted),
+                    skills: None,
                 },
             )])),
             ..Default::default()
@@ -4030,6 +4033,7 @@ async fn implicit_builtin_workspace_profile_preserves_sandbox_workspace_write_se
                 project_key,
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Trusted),
+                    skills: None,
                 },
             )])),
             sandbox_workspace_write: Some(SandboxWorkspaceWrite {
@@ -4101,6 +4105,7 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
                 project_key,
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Trusted),
+                    skills: None,
                 },
             )])),
             windows: Some(WindowsToml {
@@ -11023,6 +11028,7 @@ async fn active_project_preserves_cwd_alias_and_repo_root_precedence() -> anyhow
             alias_root.to_string_lossy().to_string(),
             ProjectConfig {
                 trust_level: Some(TrustLevel::Trusted),
+                skills: None,
             },
         )])),
         ..Default::default()
@@ -11035,6 +11041,7 @@ async fn active_project_preserves_cwd_alias_and_repo_root_precedence() -> anyhow
 
     let trusted_root = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
+        skills: None,
     };
     config.projects.as_mut().unwrap().insert(
         tmp.path().to_string_lossy().into_owned(),
@@ -11045,7 +11052,10 @@ async fn active_project_preserves_cwd_alias_and_repo_root_precedence() -> anyhow
         Some(trusted_root)
     );
 
-    let empty_cwd = ProjectConfig { trust_level: None };
+    let empty_cwd = ProjectConfig {
+        trust_level: None,
+        skills: None,
+    };
     config.projects.as_mut().unwrap().insert(
         project_root.to_string_lossy().into_owned(),
         empty_cwd.clone(),
@@ -11149,6 +11159,7 @@ trust_level = "untrusted"
         .expect("TOML deserialization should succeed");
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Untrusted),
+        skills: None,
     };
 
     let resolution = derive_legacy_sandbox_policy_for_test(
@@ -11187,12 +11198,14 @@ async fn derive_sandbox_policy_falls_back_to_read_only_for_implicit_defaults() -
             project_key,
             ProjectConfig {
                 trust_level: Some(TrustLevel::Trusted),
+                skills: None,
             },
         )])),
         ..Default::default()
     };
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
+        skills: None,
     };
     let constrained = Constrained::new(PermissionProfile::read_only(), |candidate| {
         if candidate == &PermissionProfile::read_only() {
@@ -11231,12 +11244,14 @@ async fn derive_sandbox_policy_preserves_windows_downgrade_for_unsupported_fallb
             project_key,
             ProjectConfig {
                 trust_level: Some(TrustLevel::Trusted),
+                skills: None,
             },
         )])),
         ..Default::default()
     };
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
+        skills: None,
     };
     let constrained = Constrained::new(PermissionProfile::workspace_write(), |candidate| {
         if matches!(
@@ -11508,6 +11523,7 @@ async fn untrusted_parent_repo_with_incomplete_child_git_keeps_unless_trusted_ap
                 repo.path().to_string_lossy().to_string(),
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Untrusted),
+                    skills: None,
                 },
             )])),
             ..Default::default()
@@ -11539,6 +11555,7 @@ async fn test_untrusted_project_gets_unless_trusted_approval_policy() -> anyhow:
                 test_path.to_string_lossy().to_string(),
                 ProjectConfig {
                     trust_level: Some(TrustLevel::Untrusted),
+                    skills: None,
                 },
             )])),
             ..Default::default()

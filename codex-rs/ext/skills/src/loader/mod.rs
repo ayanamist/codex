@@ -7,12 +7,13 @@ mod io_test_support;
 mod metadata;
 mod namespace;
 
-pub(crate) use environment::load_environment_skills_from_discovery;
-pub(crate) use environment::load_environment_skills_from_root;
+pub(crate) use environment::load_environment_skills_from_discovery_with_rules;
+pub(crate) use environment::load_environment_skills_from_root_with_rules;
 pub(crate) use host::HostSkillRoot;
 pub(crate) use host::HostSkillRootSnapshot;
 pub(crate) use host::canonicalize_for_skill_identity;
 pub(crate) use host::load_host_skill_root;
+#[cfg(test)]
 pub(crate) use host_merge::load_and_merge_host_skill_roots;
 pub(crate) use host_merge::load_and_merge_host_skill_roots_with_request_snapshots;
 

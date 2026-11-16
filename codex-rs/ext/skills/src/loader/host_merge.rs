@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use codex_config::SkillConfigRules;
 use codex_exec_server::EnvironmentAccessKey;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
@@ -24,6 +25,7 @@ use crate::SkillLoadOutcome;
 use crate::host_service::RequestSkillRootSnapshots;
 use crate::host_service::config_skill_root_cache_key;
 
+#[cfg(test)]
 pub(crate) async fn load_and_merge_host_skill_roots(
     roots: Vec<HostSkillRoot<'_>>,
     root_scan_slots: &Semaphore,
@@ -36,6 +38,8 @@ pub(crate) async fn load_and_merge_host_skill_roots(
         restriction_product,
         plugin_skill_snapshots,
         /*request_root_snapshots*/ None,
+        &SkillConfigRules::default(),
+        /*include_restricted_skills*/ false,
     )
     .await
 }
@@ -46,6 +50,8 @@ pub(crate) async fn load_and_merge_host_skill_roots_with_request_snapshots(
     restriction_product: Option<Product>,
     plugin_skill_snapshots: Option<&SkillRootSnapshots<PluginSkillRoot>>,
     request_root_snapshots: Option<&RequestSkillRootSnapshots>,
+    skill_config_rules: &SkillConfigRules,
+    include_restricted_skills: bool,
 ) -> SkillLoadOutcome {
     let migrated_command_roots_by_plugin = roots
         .iter()
@@ -146,9 +152,18 @@ pub(crate) async fn load_and_merge_host_skill_roots_with_request_snapshots(
     indexed_snapshots.sort_unstable_by_key(|(root_index, _, _)| *root_index);
 
     for (_, _, snapshot) in &mut indexed_snapshots {
-        snapshot
-            .skills
-            .retain(|skill| skill.matches_product_restriction_for_product(restriction_product));
+        for skill in &mut snapshot.skills {
+            skill_config_rules.apply_policy(
+                &skill.name,
+                &skill.path_to_skills_md,
+                &mut skill.policy,
+            );
+        }
+        if !include_restricted_skills {
+            snapshot
+                .skills
+                .retain(|skill| skill.matches_product_restriction_for_product(restriction_product));
+        }
     }
 
     let mut native_plugin_skill_names = HashMap::<String, HashSet<String>>::new();
@@ -172,6 +187,9 @@ pub(crate) async fn load_and_merge_host_skill_roots_with_request_snapshots(
         }
     }
     for (_, migrated_command_root, snapshot) in &mut indexed_snapshots {
+        if include_restricted_skills {
+            continue;
+        }
         let Some(migrated_command_root) = migrated_command_root else {
             continue;
         };

@@ -109,6 +109,7 @@ async fn curated_git_requirements_control_plugin_skills() -> Result<()> {
         let plugins = manager.plugins_for_config(&config).await;
         let loaded = skills
             .load_roots(SkillRootLoadRequest {
+                include_restricted_skills: false,
                 roots: plugins.effective_plugin_skill_roots(),
                 restriction_product: Some(Product::Codex),
                 snapshots: manager.plugin_skill_snapshots_for_config(&config),

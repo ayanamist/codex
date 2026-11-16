@@ -41,6 +41,10 @@ use crate::sources::SkillProviders;
 use crate::step_state::SkillStepCatalog;
 
 #[cfg(test)]
+#[path = "policy_cache_tests.rs"]
+mod policy_cache_tests;
+
+#[cfg(test)]
 #[path = "cloud_cache_tests.rs"]
 mod cloud_cache_tests;
 
@@ -149,6 +153,7 @@ impl SkillsThreadState {
         providers: &SkillProviders,
         query: SkillListQuery<'_>,
     ) -> SkillCatalog {
+        let skill_config_rules = query.skill_config_rules.clone();
         if let Some(snapshots) = &query.executor_capability_discovery_v2 {
             let snapshots = snapshots.clone();
             let (cached, already_observed) = {
@@ -157,8 +162,10 @@ impl SkillsThreadState {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let cached = state.executor_v2_cache.as_ref();
-                let already_observed =
-                    cached.is_some_and(|cached| cached.same_discovery(&snapshots));
+                let already_observed = cached.is_some_and(|cached| {
+                    cached.same_discovery(&snapshots)
+                        && cached.skill_config_rules == skill_config_rules
+                });
                 (
                     cached
                         .filter(|_| {
@@ -182,6 +189,7 @@ impl SkillsThreadState {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .executor_v2_cache = Some(CachedExecutorV2Catalog {
                         snapshots,
+                        skill_config_rules,
                         catalog: catalog.clone(),
                     });
                     catalog
@@ -203,6 +211,7 @@ impl SkillsThreadState {
             }
 
             let key = ExecutorCatalogCacheKey {
+                skill_config_rules,
                 turn_id: query.turn_id.clone(),
                 roots: query
                     .executor_roots
@@ -234,6 +243,7 @@ impl SkillsThreadState {
         providers: &SkillProviders,
         query: SkillListQuery<'_>,
     ) -> SkillCatalog {
+        let skill_config_rules = query.skill_config_rules.clone();
         let discovery = query.executor_capability_discovery.clone();
         let discovery_failed = discovery.as_ref().is_some_and(|discovery| {
             discovery.roots().iter().any(|root| {
@@ -248,10 +258,10 @@ impl SkillsThreadState {
                 .catalog_state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let cached = state
-                .executor_discovery_cache
-                .as_ref()
-                .filter(|cached| cached.matches(discovery.as_ref(), query.include_bundled_skills));
+            let cached = state.executor_discovery_cache.as_ref().filter(|cached| {
+                cached.matches(discovery.as_ref(), query.include_bundled_skills)
+                    && cached.skill_config_rules == skill_config_rules
+            });
             if !discovery_failed && let Some(cached) = cached {
                 return cached.catalog.clone();
             }
@@ -270,6 +280,7 @@ impl SkillsThreadState {
         // Failed discovery is returned to this caller but is never reused by another request.
         state.executor_discovery_cache =
             discovery.map(|discovery| CachedExecutorDiscoveryCatalog {
+                skill_config_rules,
                 discovery,
                 include_bundled_skills,
                 catalog: discovered.clone(),

@@ -116,7 +116,8 @@ impl SkillsWatcher {
             config.cwd.clone(),
             plugin_outcome.effective_plugin_skill_roots(),
             config.config_layer_stack.clone(),
-        );
+        )
+        .with_project_config(config.active_project.clone());
         let roots = thread_manager
             .skills_service()
             .watchable_skill_root_paths(&skills_input, environment.get_filesystem())

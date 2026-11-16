@@ -408,7 +408,10 @@ async fn new_config(
 
         runtime_feature_defaults: Default::default(),
         suppress_unstable_features_warning: false,
-        active_project: ProjectConfig { trust_level: None },
+        active_project: ProjectConfig {
+            trust_level: None,
+            skills: None,
+        },
         notices: Notice::default(),
         check_for_update_on_startup: false,
         disable_paste_burst: false,

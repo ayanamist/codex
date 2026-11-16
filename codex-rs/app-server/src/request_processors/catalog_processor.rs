@@ -598,6 +598,7 @@ impl CatalogRequestProcessor {
                         plugins.effective_plugin_skill_roots(),
                         config.config_layer_stack,
                     )
+                    .with_project_config(config.active_project.clone())
                     .with_plugin_skill_snapshots(plugin_skill_snapshots);
                     let skills_input = match self
                         .thread_manager

@@ -523,6 +523,7 @@ async fn selected_root_id_distinguishes_identical_executor_paths() {
     });
     let catalog = provider
         .list(SkillListQuery {
+            skill_config_rules: Default::default(),
             turn_id: "turn-1".to_string(),
             executor_roots: selected_roots
                 .iter()
@@ -614,6 +615,7 @@ async fn executor_discovery_preserves_posix_and_windows_locator_alias_roots() {
         );
         let catalog = provider
             .list(SkillListQuery {
+                skill_config_rules: Default::default(),
                 turn_id: "turn-1".to_string(),
                 executor_roots: Vec::new(),
                 host_snapshot: None,
@@ -736,6 +738,7 @@ async fn executor_discovery_routes_produce_equivalent_catalog_metadata() {
         ),
     );
     let query = |executor_capability_discovery| SkillListQuery {
+        skill_config_rules: Default::default(),
         turn_id: "turn-1".to_string(),
         executor_roots: executor_roots
             .iter()
@@ -789,6 +792,52 @@ async fn executor_discovery_routes_produce_equivalent_catalog_metadata() {
             .collect::<Vec<_>>()
     };
     assert_eq!(comparable_entries(&bundled), comparable_entries(&direct));
+    // Local policy applies after namespacing and before product filtering on both routes.
+    let rules = codex_config::SkillConfigRules {
+        entries: vec![
+            codex_config::SkillConfigRule {
+                selector: codex_config::SkillConfigRuleSelector::Name("catalog:deploy".into()),
+                enabled: None,
+                policy: Some(codex_config::SkillPolicyOverride {
+                    allow_implicit_invocation: Some(true),
+                    products: None,
+                }),
+            },
+            codex_config::SkillConfigRule {
+                selector: codex_config::SkillConfigRuleSelector::Name("catalog:excluded".into()),
+                enabled: Some(false),
+                policy: Some(codex_config::SkillPolicyOverride {
+                    allow_implicit_invocation: Some(false),
+                    products: Some(vec![]),
+                }),
+            },
+        ],
+    };
+    let mut direct_query = query(None);
+    direct_query.skill_config_rules = rules.clone();
+    let overridden_direct = provider.list(direct_query).await.unwrap();
+    let mut bundle_query = query(Some(discovery.clone()));
+    bundle_query.skill_config_rules = rules;
+    let overridden_bundle = provider.list(bundle_query).await.unwrap();
+    assert_eq!(
+        comparable_entries(&overridden_direct),
+        comparable_entries(&overridden_bundle)
+    );
+    assert!(
+        overridden_direct
+            .entries
+            .iter()
+            .find(|entry| entry.name == "catalog:deploy")
+            .unwrap()
+            .prompt_visible
+    );
+    let restored = overridden_direct
+        .entries
+        .iter()
+        .find(|entry| entry.name == "catalog:excluded")
+        .unwrap();
+    assert!(!restored.enabled);
+    assert!(!restored.prompt_visible);
     // This filesystem has no sandbox helper: restricted discovery must fail closed instead
     // of falling back to its ambient access, and restoring access must discover the same skills.
     let restricted = FileSystemEnvironmentAccessor::new(
@@ -927,6 +976,7 @@ async fn pre_discovered_executor_catalog_snapshot() {
         .await;
     let catalog = provider
         .list(SkillListQuery {
+            skill_config_rules: Default::default(),
             turn_id: "turn-1".to_string(),
             executor_roots: Vec::new(),
             host_snapshot: None,
@@ -1046,6 +1096,7 @@ async fn direct_executor_discovery_preserves_hidden_nested_and_probed_metadata()
     );
     let direct = provider
         .list(SkillListQuery {
+            skill_config_rules: Default::default(),
             turn_id: "turn-1".to_string(),
             executor_roots: vec![AccessedSelectedCapabilityRoot {
                 root: &selected_root,
@@ -1113,6 +1164,7 @@ async fn high_level_discovery_reuses_materialized_skill_contents_for_reads() {
         .await;
     let catalog = provider
         .list(SkillListQuery {
+            skill_config_rules: Default::default(),
             turn_id: "turn-1".to_string(),
             executor_roots: Vec::new(),
             host_snapshot: None,

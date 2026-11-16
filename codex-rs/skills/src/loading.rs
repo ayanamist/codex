@@ -101,6 +101,9 @@ impl<Root> fmt::Debug for SkillRootSnapshots<Root> {
 pub struct SkillRootLoadRequest<Root> {
     pub roots: Vec<Root>,
     pub restriction_product: Option<Product>,
+    /// Return raw inventory, including shadowed migrated commands, so the caller can
+    /// apply local policy before product filtering and native-command precedence.
+    pub include_restricted_skills: bool,
     pub snapshots: Option<SkillRootSnapshots<Root>>,
 }
 

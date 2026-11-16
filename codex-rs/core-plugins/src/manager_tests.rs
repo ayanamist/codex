@@ -7279,6 +7279,7 @@ async fn load_plugins_uses_project_config_files() {
 
     let plugins = load_plugins_from_layer_stack(
         &stack,
+        None,
         &stack
             .effective_config()
             .try_into::<codex_config::config_toml::ConfigToml>()
@@ -7997,4 +7998,44 @@ fn plugin_install_error_preserves_store_io_sub_error_type() {
         error.sub_error_type(),
         Some("failed_to_copy_plugin_file".to_string())
     );
+}
+
+#[test]
+fn plugin_cache_identity_includes_workspace_skill_policy() {
+    let home = tempfile::tempdir().unwrap();
+    let base = PluginsConfigInput::new(
+        ConfigLayerStack::default(),
+        Default::default(),
+        String::new(),
+        true,
+        false,
+        String::new(),
+        test_http_client_factory(),
+        None,
+    );
+    let project = |implicit| codex_config::config_toml::ProjectConfig {
+        trust_level: None,
+        skills: Some(codex_config::ProjectSkillsConfig {
+            config: vec![codex_config::SkillConfig {
+                name: Some("example:research".into()),
+                path: None,
+                enabled: None,
+                policy: Some(codex_config::SkillPolicyOverride {
+                    allow_implicit_invocation: Some(implicit),
+                    products: None,
+                }),
+            }],
+        }),
+    };
+    let a = base.clone().with_project_config(project(false));
+    let b = base.with_project_config(project(true));
+    let key = |config: &PluginsConfigInput| {
+        PluginLoadCacheKey::from_config(
+            config,
+            home.path(),
+            false,
+            RemoteInstalledPluginsAuthIdentity::from_auth(None),
+        )
+    };
+    assert!(key(&a) != key(&b));
 }

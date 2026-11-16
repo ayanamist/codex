@@ -94,7 +94,7 @@ fn deserialize_skill_config_with_name_selector() {
 
     assert_eq!(cfg.name.as_deref(), Some("github:yeet"));
     assert_eq!(cfg.path, None);
-    assert!(!cfg.enabled);
+    assert_eq!(cfg.enabled, Some(false));
 }
 
 #[test]
@@ -118,7 +118,8 @@ fn deserialize_skill_config_with_path_selector() {
                     .expect("skill path should be absolute"),
             ),
             name: None,
-            enabled: false,
+            enabled: Some(false),
+            policy: None,
         }
     );
 }

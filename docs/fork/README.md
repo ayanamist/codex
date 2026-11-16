@@ -16,9 +16,12 @@
 - [Skill invocation policy compatibility](skill-invocation-policy.md): fall back
   to `SKILL.md` frontmatter when `agents/openai.yaml` leaves invocation unset;
   preserve explicit Codex policy and product restrictions across host and
-  executor discovery. Keywords: skills, `disable-model-invocation`,
-  `allow_implicit_invocation`, explicit-only, frontmatter, Claude Code,
-  openai/codex#29989. Implemented: 2026-11-10.
+  executor discovery; override enablement and policy globally or per workspace
+  using existing project entries, with field inheritance and isolated caches.
+  Keywords: skills, `disable-model-invocation`, `allow_implicit_invocation`,
+  `products`, `skills.config`, `projects`, workspace, policy overrides,
+  explicit-only, frontmatter, Claude Code, openai/codex#29989.
+  Implemented: 2026-11-10; local overrides: 2026-11-16, `0.169.0`.
 - [Linux sandbox empty mount targets](sandbox-mount-targets.md): known upstream
   issue, host directory creation, interrupted cleanup, identity-based recovery,
   user data protection, and verification. Keywords: Linux, bubblewrap, bwrap,

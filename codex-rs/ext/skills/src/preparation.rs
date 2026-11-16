@@ -64,6 +64,9 @@ async fn discover_executor_catalog(
     cloud_enabled: bool,
 ) -> SkillCatalog {
     let query = SkillListQuery {
+        skill_config_rules: HostSkillsSnapshot::for_step(input.step_store, input.turn_store)
+            .map(|snapshot| snapshot.config_rules().clone())
+            .unwrap_or_default(),
         turn_id: input.turn_id.to_string(),
         executor_roots: input.ready_selected_capability_roots.to_vec(),
         host_snapshot: None,
@@ -95,6 +98,7 @@ async fn discover_host_catalog(
     Some(
         providers
             .list_host_for_turn(SkillListQuery {
+                skill_config_rules: Default::default(),
                 turn_id: input.turn_id.to_string(),
                 executor_roots: Vec::new(),
                 host_snapshot: Some(host_snapshot),

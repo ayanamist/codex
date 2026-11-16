@@ -1709,3 +1709,89 @@ fn replace_mcp_servers_blocking_clears_table_when_empty() {
     let contents = std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
     assert!(!contents.contains("mcp_servers"));
 }
+
+#[test]
+fn enabling_skill_preserves_policy_override() {
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[[skills.config]]
+name = "research"
+enabled = false
+policy = { allow_implicit_invocation = false, products = ["codex"] }
+"#,
+    )
+    .unwrap();
+    ConfigEditsBuilder::new(home.path())
+        .with_edits([ConfigEdit::SetSkillConfigByName {
+            name: "research".into(),
+            enabled: true,
+        }])
+        .apply_blocking()
+        .unwrap();
+    let config: toml::Value =
+        toml::from_str(&std::fs::read_to_string(home.path().join(CONFIG_TOML_FILE)).unwrap())
+            .unwrap();
+    let entry = &config["skills"]["config"][0];
+    assert_eq!(entry["enabled"].as_bool(), Some(true));
+    assert_eq!(
+        entry["policy"]["allow_implicit_invocation"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(entry["policy"]["products"][0].as_str(), Some("codex"));
+}
+
+#[test]
+fn skill_enablement_edits_preserve_inline_and_repeated_policy_rules() {
+    for config in [
+        r#"[skills]
+config = [{ name = "research", enabled = false, policy = { allow_implicit_invocation = false } }]
+"#,
+        r#"[[skills.config]]
+name = "research"
+policy = { allow_implicit_invocation = false }
+[[skills.config]]
+name = "research"
+enabled = false
+"#,
+        r#"[[skills.config]]
+name = "research"
+enabled = false
+[[skills.config]]
+name = "research"
+policy = { allow_implicit_invocation = false }
+"#,
+    ] {
+        let home = tempdir().unwrap();
+        std::fs::write(home.path().join(CONFIG_TOML_FILE), config).unwrap();
+        for enabled in [true, false, true] {
+            ConfigEditsBuilder::new(home.path())
+                .with_edits([ConfigEdit::SetSkillConfigByName {
+                    name: "research".into(),
+                    enabled,
+                }])
+                .apply_blocking()
+                .unwrap();
+            let config: toml::Value = toml::from_str(
+                &std::fs::read_to_string(home.path().join(CONFIG_TOML_FILE)).unwrap(),
+            )
+            .unwrap();
+            let entries = config["skills"]["config"].as_array().unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .rev()
+                    .find_map(|entry| entry.get("enabled").and_then(toml::Value::as_bool)),
+                Some(enabled)
+            );
+            assert!(entries.iter().any(|entry| {
+                entry
+                    .get("policy")
+                    .and_then(|policy| policy.get("allow_implicit_invocation"))
+                    .and_then(toml::Value::as_bool)
+                    == Some(false)
+            }));
+        }
+    }
+}

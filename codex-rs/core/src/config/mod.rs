@@ -1897,6 +1897,7 @@ impl Config {
             self.http_client_factory(),
             self.apps_mcp_product_sku.clone(),
         )
+        .with_project_config(self.active_project.clone())
         .with_plugin_recommendations_enabled(self.features.plugin_recommendations_enabled())
         .with_runtime_auth_mode(
             (self.features.enabled(Feature::RuntimeAgentInstances)
@@ -3652,12 +3653,21 @@ impl Config {
             .map(|path| AbsolutePathBuf::resolve_path_against_base(path, resolved_cwd.as_path()))
             .collect();
         let repo_root = resolve_root_git_project_for_trust(fs, &resolved_cwd).await;
-        let active_project = cfg
+        let mut active_project = cfg
             .get_active_project(
                 resolved_cwd.as_path(),
                 repo_root.as_ref().map(AbsolutePathBuf::as_path),
             )
-            .unwrap_or(ProjectConfig { trust_level: None });
+            .unwrap_or(ProjectConfig {
+                trust_level: None,
+                skills: None,
+            });
+        active_project.skills = codex_config::skill_project_for_cwd(
+            &config_layer_stack,
+            resolved_cwd.as_path(),
+            repo_root.as_ref().map(AbsolutePathBuf::as_path),
+        )
+        .and_then(|project| project.skills);
         let permission_config = resolve_permission_config(
             &config_layer_stack,
             &cfg,

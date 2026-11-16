@@ -70,6 +70,7 @@ fn snapshot_handles_share_owner_managed_values_and_identity() {
 fn skill_root_loader_supports_shared_trait_objects() {
     let loader: Arc<dyn SkillRootLoader<String>> = Arc::new(TestSkillRootLoader);
     let future = loader.load_roots(SkillRootLoadRequest {
+        include_restricted_skills: false,
         roots: vec!["plugin-root".to_string()],
         restriction_product: None,
         snapshots: None,
