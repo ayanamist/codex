@@ -1,8 +1,8 @@
 <p align="center"><strong>Codex CLI — ayanamist fork</strong>, based on OpenAI's coding agent that runs locally on your computer.</p>
 
 This repository distributes the `ayanamist/codex` fork. Install it from this
-fork's GitHub Releases using the commands below. See the [fork notes](./docs/fork/README.md)
-for changes and release details.
+fork's GitHub Releases using the commands below. See the
+[中文使用手册与维护参考](./docs/fork/README.md) for feature configuration and maintenance contracts.
 
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
@@ -44,7 +44,7 @@ codex --version
 codex
 ```
 
-Current fork versions look like `0.167.0-fork.aeae161d`.
+Fork versions use `<upstream-version>-fork.<eight-character-commit>`.
 For subsequent updates, run `codex update`. See
 [installation details](./docs/install.md) for selecting a release, install paths,
 and migrating an existing official installation.
@@ -57,6 +57,7 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 
 ## Docs
 
+- [**中文使用手册与维护参考**](./docs/fork/README.md)
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)

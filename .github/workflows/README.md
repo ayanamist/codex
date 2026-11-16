@@ -1,155 +1,35 @@
-# Fork build and release workflow
+# Fork 发布工作流
 
-Scope: `ayanamist/codex`, reviewed on 2026-11-10 against workspace version
-`0.167.0` and the accompanying fork changes.
-Keywords: GitHub Actions, fork, upstream package, release, voice, version, glibc,
-GNU, Windows, MAX_PATH, Cargo, cache, timings, commit hash, SemVer suffix,
-paths-ignore.
+范围：`ayanamist/codex`；核对日期：2026-11-16；工作区版本：`0.169.0`。
+关键词：GitHub Actions、release、workflow_dispatch、latest、三平台。
 
-Updated on 2026-11-11: each platform has its own workflow,
-[`rust-release-linux.yml`](rust-release-linux.yml),
-[`rust-release-macos.yml`](rust-release-macos.yml), and
-[`rust-release-windows.yml`](rust-release-windows.yml). Each is self-contained
-(resolve, build, upload) and contains only its platform's steps; there is no shared
-workflow, so a change to common steps must be applied to all three. A failing
-platform no longer cancels or blocks the others, and each can be re-run alone
-so successful platforms still save their caches. Each build workflow serializes
-per target. All three resolve the same deterministic tag, and a tag created first
-by a sibling is accepted. The first platform to finish creates the release as a
-prerelease and non-latest (its notes never change); every platform then uploads
-its own package with `--clobber` plus the installers, and rewrites
-`codex-package_SHA256SUMS` from the release's asset digests until the archive set
-is stable. Nothing promotes a release automatically: `releases/latest` keeps
-serving the previous stable release until you run
-`gh release edit <tag> --prerelease=false --latest`. Re-running a failed platform
-fills in its package.
+| 平台 | 工作流 |
+| --- | --- |
+| Linux x64 GNU | [rust-release-linux.yml](rust-release-linux.yml) |
+| macOS ARM64 | [rust-release-macos.yml](rust-release-macos.yml) |
+| Windows x64 MSVC | [rust-release-windows.yml](rust-release-windows.yml) |
 
-Pushing to `fork-release`
-automatically selects a tag such as `rust-v0.167.0-fork.5d0840ed`, builds the
-fork's `codex` entrypoint for Linux GNU/glibc x64, macOS ARM64, and Windows x64,
-and publishes a prerelease. Manual tag creation is unnecessary. A manual
-`workflow_dispatch` on `fork-release` of any platform workflow provides a recovery
-entry point; it always publishes.
+三个工作流独立完成解析、构建和上传，公共步骤变更必须同步到三个文件。
+向 `fork-release` 推送代码触发预发布；纯文档推送被路径过滤忽略。
+只修改某个平台的工作流时，不触发另外两个平台；过时提交检查也使用相同的排除规则。
 
-The suffix contains the first eight source commit characters, with the full SHA
-retained in package metadata and linked release notes. A retry reuses the tag already
-reserved for that commit, including after its release exists. Obsolete queued push
-commits are skipped. A later documentation-only push does not supersede a pending code
-release. The workflow serializes allocation through publication and passes
-the selected tag to its later jobs directly, using the built-in `GITHUB_TOKEN`.
+失败时，在对应工作流选择 **Re-run failed jobs**；也可以在 `fork-release` 上使用
+**Run workflow** 手动运行。当前没有编译缓存测量开关，工作流不使用 sccache。
 
-Pushes changing only `docs/**` or `.md`, `.mdx`, `.rst`, `.adoc`, and `.mmd` files
-are ignored, as are changes to the other two platforms' workflow files, so editing
-one platform's YAML does not trigger the other two. A push that also changes code
-still runs every platform; manual dispatch remains available. The resolver uses
-the same exclusions (`--ignored-path` for the sibling workflows) when deciding
-whether a newer branch head has superseded a queued code release.
+Linux 和 Windows 在同一构建中生成 CLI 和 executor。
+macOS 通过两个 matrix job 分别构建，两者共享 rust-cache，由 CLI job 保存缓存；
+签名后的可执行文件作为一天有效的 artifact 传给 package job，由它统一打包发布。
 
-The workflow verifies that the corresponding `openai/codex` stable release
-exists and its tag commit is an ancestor of the fork commit. It downloads each
-platform's official package (the same-architecture musl package for Linux) and verifies the archive checksum, package identity,
-voice resource inventory, and upstream voice commit before building. It uses
-that package's bwrap digest when compiling Linux Codex and passes the upstream
-voice commit separately from the actual fork build commit.
-
-`codex-cli --bin codex` and `codex-exec-server-cli --bin codex-exec-server` both
-replace their upstream counterparts in the package. Linux and Windows build them
-in one `cargo build`. macOS builds each in its own matrix job (sharing one
-rust-cache, saved by the `codex` job), uploads the signed executables as
-one-day artifacts, and a `package` job assembles and publishes them.
-The packaged binaries must both report the fork version. Code-mode host, voice
-helper/runtime, ripgrep, and platform sandbox helpers are reused from the pinned
-upstream package, with unchanged file contents verified. V8, lint tools, and
-separate app-server binaries are not built here. `fork-build.json` records the
-fork commit and digest for each rebuilt binary.
-
-Windows jobs use a short Cargo home at the workspace drive root and enable Git
-long paths before dependency resolution. Both Windows jobs in run `42757196810`
-previously failed on a V8/ICU submodule snapshot path. Before any Cargo metadata
-or build command, the workflow now downloads a checksum-pinned 405 KB snapshot
-of the same rusty_v8 commit and configures Cargo source replacement. The 163
-tracked files preserve the Rust patches without fetching V8/ICU submodules;
-Cargo.toml and the locked git identity are preserved. This CI path forces the
-prebuilt native-library mode. See the [source preparation and Linux runtime
-verification](../../docs/fork/release-management.md#avoiding-v8-submodule-downloads).
-
-Each target caches Cargo registry/git data and compiled third-party crates with
-`Swatinem/rust-cache`, pinned to v2.9.3's commit. Cache identity includes the
-runner/target, Rust/compiler environment, manifests, and lockfile. Internal
-package identities remain `0.0.0`; executable entry points embed the release
-version and commit. The `fork-release-v2` cache retains other git dependencies for reuse;
-the large V8/ICU git tree is never fetched because V8 uses the small snapshot
-described above. Workspace crates and installed Cargo tools remain excluded.
-Successful jobs save the cache. Cargo HTML timings are retained as
-separate `rust-build-timings-*` artifacts for seven days, outside the release's
-`codex-*` download pattern. Gzipped packages upload without redundant ZIP
-compression. See the [diagnosis, baseline, and cache limits](../../docs/fork/release-management.md#windows-dependency-checkout-and-build-caching).
-Updated on 2026-11-11: the explicit cache-key fingerprint covers root build
-settings rather than the entire root manifest, allowing reuse across version
-changes. sccache and the `verify_compiler_cache` benchmark were removed on
-2026-11-13: its own statistics never recorded a request, and merged upstream
-releases change most workspace crates anyway. See the
-[removal rationale](../../docs/fork/release-management.md#sccache-removal-and-release-channel-change).
-macOS ARM64 has a 300-minute timeout after run `43135737205` exceeded its
-three-hour limit; Linux and Windows retain 180 minutes. See the
-[macOS timeout evidence](../../docs/fork/release-management.md#macos-arm64-timeout-run-43135737205).
-Release optimization settings are
-retained. Run `42777286813` uploaded caches for all six former targets; the cache
-API subsequently retained only the two macOS entries, consistent with capacity
-eviction. The three retained targets' old caches totaled about 11.7 GB. A local
-same-revision V8 checkout alone compressed to about 2.94 GB, motivating the
-source replacement; new Actions cache sizes and warm-build times remain unmeasured. See
-the [observed cache sizes and timing evidence](../../docs/fork/release-management.md#cache-retention-and-three-platform-release-scope).
-
-Linux CLI builds use Ubuntu 22.04 runners (glibc 2.35) to support glibc 2.38
-and newer. GNU output metadata records the upstream musl resource target
-separately. Before upload, every packaged ELF file is checked for GLIBC imports
-above 2.38, including the reused voice runtime and helpers. The Unix installer
-selects the GNU archives. See the [compatibility contract](../../docs/fork/release-management.md#linux-glibc-238-compatibility)
-for evidence and runtime verification limits.
-
-The integration branch retains its original Cargo.toml/Cargo.lock for this change. `resolve`
-selects the upstream release from that original manifest. In the disposable
-build checkout, `prepare_fork_sources.py` normalizes internal package identities
-to `0.0.0` and adapts version consumers before metadata/cache restoration.
-`prepare` exports `CODEX_RELEASE_VERSION`; executable entry points initialize
-`codex-build-info` and adapted libraries read its runtime version interface.
-The script scans new source files automatically and rejects unsupported version
-syntax before writing; it does not depend on a saved upstream patch. Its report
-is included in the build timings artifact. There is no bulk consumer diff or
-separate upstream version pin in the integration branch.
-Installers, startup/doctor update checks, and daemon
-installation accept arbitrary legal SemVer suffixes, with no hash-length check.
-Generated versions use `fork.<eight characters>`; historical numbered releases
-remain supported. GitHub Release flags determine the stable channel. See
-[release management](../../docs/fork/release-management.md) for the release
-procedure, metadata contract, source evidence, and verification commands.
-
-The release publishes three `codex-package-<target>.tar.gz` files,
-`codex-package_SHA256SUMS`, and the fork's `install.sh` and `install.ps1`. It is
-a prerelease until you promote it manually, so the installers' `latest` lookup
-does not see it. Re-running a platform overwrites its own assets.
-
-The new macOS CLI and executor use ad hoc signatures; their Windows equivalents
-are not Authenticode signed. Reused upstream binary signatures are preserved. No
-OpenAI signing credentials, BuildBuddy, custom runners, npm, PyPI, R2, WinGet,
-DMG publication, or website deployment are required. PR/post-merge CI, test
-suites, lint, and Issue/PR automation remain removed. The workflow's version and
-resource checks are release integrity checks.
-
-Local validation:
+各平台独立上传相同 tag 的资产。发布保持 prerelease，单个平台失败时可以补跑。
+三个包齐全后仍需维护者手动确认并晋升稳定版：
 
 ```sh
-actionlint -oneline .github/workflows/rust-release*.yml
-python3 -m unittest discover -s .github/scripts -p test_fork_release.py
-python3 -m unittest discover -s .github/scripts -p test_prepare_rusty_v8_source.py
-python3 -m unittest discover -s .github/scripts -p test_check_linux_glibc.py
-python3 -m unittest discover -s .github/scripts -p test_releases.py
-python3 scripts/install/test_install_sh.py
-git diff --check
+gh release edit TAG --repo ayanamist/codex --prerelease=false --latest
 ```
 
-No workflow run or publication was triggered locally. The reduced matrix and
-warm-cache performance still require an Actions run; platform installation
-remains separate verification. Branch protection may
-still reference removed checks and requires a repository settings change if so.
+将 `TAG` 替换成已检查的发布 tag。自动流程不会晋升 `latest`，
+默认安装器继续使用此前的稳定版；预发布版本可以显式指定安装。
+
+版本、上游包校验、helper 复用、缓存和验证入口见
+[构建与发布维护参考](../../docs/fork/release-management.md)。
+面向使用者的安装与更新说明见 [中文使用手册](../../docs/install.md)。

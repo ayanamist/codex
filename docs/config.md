@@ -6,17 +6,12 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
-## Project MCP JSON compatibility in this fork
+## 本 fork 的项目 MCP 配置
 
-Trusted projects can use `.mcp.json` directly, with a `mcpServers` object or a
-bare server map. Codex discovers files between the project root and current
-directory; nearer files win, and same-directory `.codex/config.toml` has
-priority. The JSON supports stdio and Streamable HTTP, common `headers`,
-`${VAR}` / `${VAR:-default}` references, comments and trailing commas.
-Legacy `type: "sse"` produces a warning and is skipped. Invalid server entries
-are isolated from valid siblings. See the [compatibility contract and
-verification](fork/project-mcp-configuration.md) for paths, merge rules,
-unsupported fields and upstream/reference implementation differences.
+受信任项目可以直接使用 `.mcp.json`，支持本地进程和 Streamable HTTP、
+环境变量、headers、注释和末尾逗号。
+文件位置、配置示例和覆盖规则见 [中文使用手册](fork/usage/project-mcp.md)。
+实现边界和源码入口见 [MCP 配置维护契约](fork/project-mcp-configuration.md)。
 
 ## Lifecycle hooks
 

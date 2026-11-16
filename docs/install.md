@@ -1,46 +1,57 @@
-## Installing & building this fork
+# 安装与更新
 
-### Install from GitHub Releases
+本页介绍 `ayanamist/codex` 的独立安装包。功能配置见 [中文使用手册索引](fork/README.md)。
 
-The `ayanamist/codex` fork publishes standalone packages for these targets:
+## 支持的平台
 
-| Platform | Release package | Requirement |
+| 平台 | 发布包 | 要求 |
 | --- | --- | --- |
-| Linux x86_64 | `codex-package-x86_64-unknown-linux-gnu.tar.gz` | glibc 2.38 or newer |
+| Linux x86_64 | `codex-package-x86_64-unknown-linux-gnu.tar.gz` | glibc 2.38 或更新 |
 | macOS Apple Silicon | `codex-package-aarch64-apple-darwin.tar.gz` | ARM64 |
-| Windows x64 | `codex-package-x86_64-pc-windows-msvc.tar.gz` | Native Windows, PowerShell installer |
+| Windows x64 | `codex-package-x86_64-pc-windows-msvc.tar.gz` | 原生 Windows，使用 PowerShell 安装 |
 
-Linux ARM64, Intel macOS, Windows ARM64, and musl/Alpine packages are not
-currently published. WSL follows the Linux requirements.
+当前发布配置不生成 Linux ARM64、Intel macOS、Windows ARM64 或 musl/Alpine 包。
+WSL 按 Linux 要求处理。
 
-On macOS or Linux:
+## 首次安装
+
+macOS 或 Linux：
 
 ```sh
 curl -fsSL https://github.com/ayanamist/codex/releases/latest/download/install.sh | sh
 ```
 
-On Windows, run in PowerShell:
+Windows PowerShell：
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/ayanamist/codex/releases/latest/download/install.ps1 | iex"
 ```
 
-These scripts resolve the latest published stable release in
-[`ayanamist/codex`](https://github.com/ayanamist/codex/releases/latest) and verify
-downloaded packages with SHA-256. The packages include the CLI and its companion
-executables and resources; keep the complete package together. The fork does
-not publish the upstream standalone `codex` DotSlash release asset.
+安装器从 [本 fork 的 GitHub Releases](https://github.com/ayanamist/codex/releases/latest)
+下载最新稳定包并校验 SHA-256。包内包含 CLI、辅助程序和运行资源，应保持完整。
 
-To select a specific published release, set `CODEX_RELEASE` to its version
-(with or without the `rust-v` prefix). For example, to install the release
-observed on 2026-11-11:
+安装完成后按终端提示配置 PATH，或打开新终端，再确认版本并启动：
 
 ```sh
-curl -fsSL https://github.com/ayanamist/codex/releases/latest/download/install.sh | CODEX_RELEASE=0.167.0-fork.aeae161d sh
+codex --version
+codex
 ```
 
+Fork 版本使用 `<上游版本>-fork.<提交前八位>` 的形式。
+
+## 指定版本
+
+将 `VERSION` 替换成 Releases 页面已有的版本号，可以带或不带 `rust-v` 前缀。
+Unix 安装器接受 `--release`：
+
+```sh
+curl -fsSL https://github.com/ayanamist/codex/releases/latest/download/install.sh | sh -s -- --release VERSION
+```
+
+PowerShell 使用 `CODEX_RELEASE` 环境变量：
+
 ```powershell
-$env:CODEX_RELEASE = '0.167.0-fork.aeae161d'
+$env:CODEX_RELEASE = 'VERSION'
 try {
     irm https://github.com/ayanamist/codex/releases/latest/download/install.ps1 | iex
 } finally {
@@ -48,93 +59,75 @@ try {
 }
 ```
 
-This selects the installation version for that invocation; it does not pin
-future `codex update` calls. Unix also accepts `sh -s -- --release VERSION`.
+Unix 也支持 `CODEX_RELEASE`。指定版本只控制该次安装，不会锁定后续 `codex update`。
+预发布版本可以显式选择，但不会自动成为默认 latest 稳定通道。
+当前自动发布流程生成的是预发布版本；在维护者将其晋升稳定版之前，
+默认安装和 `codex update` 继续使用此前的稳定版。
+需要使用预发布版本时，按本节显式指定版本安装。
 
-### Install paths, migration, and updates
+## 安装路径
 
-The default command location is `~/.local/bin/codex` on macOS/Linux and
-`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` on Windows. Set
-`CODEX_INSTALL_DIR` to override the command directory. Package contents live
-under `$CODEX_HOME/packages/standalone` (`~/.codex/packages/standalone` by default).
-The installer configures PATH; follow its terminal instructions or open a new
-terminal before running Codex.
+| 内容 | 默认位置 |
+| --- | --- |
+| macOS/Linux 命令 | `~/.local/bin/codex` |
+| Windows 命令 | `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` |
+| 完整包 | `$CODEX_HOME/packages/standalone`，默认 `~/.codex/packages/standalone` |
 
-The official `chatgpt.com` installers, npm package `@openai/codex`, and Homebrew
-cask `codex` install OpenAI's distribution. To migrate to this fork, run the fork
-installer above. It detects conflicting package-manager installations and can
-offer to uninstall them with confirmation. If an old installation remains,
-check which executable your shell selects:
+通过 `CODEX_INSTALL_DIR` 可以改变命令目录。
+如果终端仍使用其他版本，检查实际命令来源：
 
 ```sh
 command -v codex
 codex --version
 ```
 
+Windows：
+
 ```powershell
 Get-Command codex -All
 codex --version
 ```
 
-Current fork versions include a suffix such as `-fork.aeae161d`. Once using the
-fork's standalone installation, update with:
+## 从官方版本迁移
+
+运行上面的 fork 安装器。它可以检测冲突的包管理器安装，并在确认后卸载旧安装。
+如果保留了旧安装，检查 PATH 中的顺序，确认运行的是 fork 的独立安装版本。
+
+`chatgpt.com` 安装器、npm 的 `@openai/codex` 和 Homebrew 的 `codex` cask
+提供官方分发。通过这些来源更新会回到官方版本。
+本 fork 的 `codex update` 会拒绝通过 Homebrew、npm、pnpm、Bun 或 Vite+ 自动更新，
+并提示迁移到独立安装。
+
+## 后续更新
+
+使用 fork 独立安装后运行：
 
 ```sh
 codex update
 ```
 
-Running the fork installer again also updates it. See
-[CLI installation and update sources](fork/updates.md) for the source contract
-and verification evidence.
+再次运行 fork 安装器也可以更新。
+更新命令和托管 daemon 的安装更新都使用本 fork 的 GitHub Releases。
+如果使用 debug 构建或无法识别的安装布局，按提示手工安装。
 
-### Build from source
+启动时的版本提示有本地缓存，更新后可能需要等待刷新；
+`codex update` 本身不依赖该提示缓存。
+没有用于切换更新仓库或安装器地址的 `config.toml` 设置。
 
-```bash
-# Clone the repository and navigate to the root of the Cargo workspace.
-git clone --branch fork-release https://github.com/ayanamist/codex.git
-cd codex/codex-rs
+## 诊断日志
 
-# Install the Rust toolchain, if necessary.
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup component add rustfmt
-rustup component add clippy
-# Install helper tools used by the workspace justfile:
-cargo install --locked just
-# DotSlash fetches pinned development tools such as buildifier on first use.
-cargo install --locked dotslash
-# Install nextest for the `just test` helper.
-cargo install --locked cargo-nextest
+TUI 默认将诊断保存在有容量限制的本地存储中。
+需要文本日志时，可显式设置日志目录：
 
-# Build Codex.
-cargo build
-
-# Launch the TUI with a sample prompt.
-cargo run --bin codex -- "explain this codebase to me"
-
-# After making changes, use the root justfile helpers (they default to codex-rs):
-just fmt
-just fix -p <crate-you-touched>
-
-# Run the relevant tests (project-specific is fastest), for example:
-just test -p codex-tui
-# `just test` runs the test suite via nextest:
-just test
-# Avoid `--all-features` for routine local runs because it increases build
-# time and `target/` disk usage by compiling additional feature combinations.
-```
-
-## Tracing / verbose logging
-
-Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.
-
-The TUI records diagnostics in bounded local stores by default. Set `log_dir` explicitly to enable a plaintext TUI log for a run:
-
-```bash
+```sh
 codex -c log_dir=./.codex-log
 tail -F ./.codex-log/codex-tui.log
 ```
 
-The non-interactive mode (`codex exec`) defaults to `RUST_LOG=error`, but messages are printed inline, so there is no need to monitor a separate file.
+可用 `RUST_LOG` 调整 Rust 日志级别。
+非交互模式 `codex exec` 默认使用 `RUST_LOG=error` 并直接输出日志。
 
-See the Rust documentation on [`RUST_LOG`](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for more information on the configuration options.
+## 源码开发与维护
+
+源码构建和发布契约见 [构建与发布维护参考](fork/release-management.md)，
+通用开发说明见 [Rust 工作区说明](../codex-rs/README.md)。
