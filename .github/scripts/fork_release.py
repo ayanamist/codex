@@ -407,7 +407,7 @@ def publish(tag: str, directory: Path) -> None:
         if sums.keys() == published:
             break
         checksums = directory / "codex-package_SHA256SUMS"
-        checksums.write_text("".join(f"{value}  {name}\n" for name, value in sums.items()), encoding="utf-8")
+        checksums.write_text("".join(f"{value}  {name}\n" for name, value in sums.items()), encoding="utf-8", newline="\n")
         run("gh", "release", "upload", tag, "--repo", repository, "--clobber", str(checksums))
         published = sums.keys()
     else:

@@ -522,6 +522,8 @@ package_archive_digest() {
   manifest_path="$2"
 
   digest="$(awk -v asset="$asset" '
+    # A manifest uploaded by a Windows publisher may use CRLF line endings.
+    { sub(/\r$/, "") }
     $2 == asset && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {
       print tolower($1)
       found = 1

@@ -463,6 +463,29 @@ class ForkReleaseTests(unittest.TestCase):
             self.assertEqual([args[2] for args in publication].count("upload"), 3)
             self.assertEqual(len((directory / "codex-package_SHA256SUMS").read_text().splitlines()), 2)
 
+    def test_publication_writes_lf_checksums_on_windows(self):
+        linux = release.TARGETS[0]
+        path_open = Path.open
+
+        def windows_open(path, mode="r", **kwargs):
+            # Model Windows text-mode defaults while honoring explicit newlines.
+            if "b" not in mode and kwargs.get("newline") is None:
+                kwargs["newline"] = "\r\n"
+            return path_open(path, mode, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.make_archives(directory, [linux])
+            with patch.object(Path, "open", windows_open):
+                self.publish(
+                    "rust-v0.167.0-fork.bbbbbbbb", directory,
+                    [{"draft": False}, self.assets(linux), self.assets(linux)],
+                )
+            self.assertEqual(
+                (directory / "codex-package_SHA256SUMS").read_bytes(),
+                f"{release.digest(directory / f'codex-package-{linux}.tar.gz')}  codex-package-{linux}.tar.gz\n".encode(),
+            )
+
     def test_draft_release_from_an_earlier_run_is_published_as_a_prerelease(self):
         linux = release.TARGETS[0]
         with tempfile.TemporaryDirectory() as temporary:

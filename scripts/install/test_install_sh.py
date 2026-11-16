@@ -21,6 +21,22 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_package_install_accepts_crlf_checksum_manifest(self) -> None:
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive, checksum, metadata = create_package_release(
+                    root, target=target, checksum_newline="\r\n"
+                )
+                result, _requests = run_installer_in(
+                    root, VERSION, metadata_json=metadata, archive_path=archive,
+                    checksum_path=checksum,
+                    force_linux_arch="x86_64" if "linux" in target else None,
+                    force_macos="darwin" in target,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((root / "install-bin/codex").exists())
+
     def test_linux_installs_gnu_packages_for_both_architectures(self) -> None:
         for arch in ("x86_64", "aarch64"):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temporary:
@@ -1062,6 +1078,7 @@ def create_package_release(
     binary_version: str = VERSION,
     target: str = "aarch64-apple-darwin",
     include_exec_server: bool = False,
+    checksum_newline: str = "\n",
 ) -> tuple[Path, Path, str]:
     package_dir = root / "package"
     (package_dir / "bin").mkdir(parents=True)
@@ -1095,7 +1112,7 @@ def create_package_release(
 
     archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     checksum_path = root / "codex-package_SHA256SUMS"
-    checksum_path.write_text(f"{archive_digest}  {asset}\n", encoding="utf-8")
+    checksum_path.write_bytes(f"{archive_digest}  {asset}{checksum_newline}".encode("utf-8"))
     checksum_digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
     metadata_json = json.dumps(
         {

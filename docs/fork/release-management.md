@@ -154,6 +154,20 @@ macOS 分别保存两个入口的 timing artifact；不再生成 sccache JSON �
 安装器接受合法 SemVer 后缀，也保留历史编号版本支持。
 `latest` 查询只选择稳定发布，不会自动选择当前流程生成的 prerelease。
 
+共享校验清单 `codex-package_SHA256SUMS` 必须在所有发布平台固定输出 UTF-8、LF 换行，
+不使用 Windows 文本模式默认的 CRLF。Unix 安装器同时接受 LF 和 CRLF，解析时只移除行尾
+`\r`，仍严格匹配附件名、64 位十六进制摘要并校验下载内容。
+2026-11-16 核对 `rust-v0.169.0-fork.0ff7a389` 的实际附件确认：Windows 发布后清单为 CRLF，
+旧 Unix 安装器会将行尾 `\r` 计入文件名并报找不到摘要。对应回归测试覆盖 Windows 文本模式
+下发布清单的原始字节，以及 Linux/macOS 平台选择时读取 CRLF 清单；平台选择测试使用模拟包，
+不代表已经执行原生 macOS 或 Windows 安装。
+
+`.gitattributes` 中的 `scripts/install/install.sh text eol=lf`（提交 `51c9b2f549`）
+只约束 Git 检出安装脚本的换行，不能约束 Python 在发布时生成的清单。该修复在本次故障版本中
+仍然存在：脚本本身为 LF，清单为 CRLF。各平台都会覆盖共享清单，其换行因此取决于最后上传
+平台；必须在生成端显式指定换行。清单回归测试需比较原始字节，`read_text().splitlines()`
+会消除 LF/CRLF 差异，无法检查这一契约。
+
 独立安装的 CLI `codex update` 和托管 daemon 使用 fork 安装器。
 官方 Homebrew、npm、pnpm、Bun、Vite+ 自动更新被拒绝，需要迁移到独立安装。
 debug 构建拒绝 update，未知安装布局要求手工更新。
