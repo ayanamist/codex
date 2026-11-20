@@ -9,7 +9,6 @@
 | [安装与更新](../install.md) | 支持的平台、首次安装、指定版本、从官方版本迁移、更新和日志 | 安装、迁移、PATH、`codex update` |
 | [项目 MCP 配置](usage/project-mcp.md) | 直接使用项目 `.mcp.json`，配置本地进程或 HTTP 服务，处理变量和覆盖规则 | MCP、JSONC、headers、环境变量、信任 |
 | [Skill 配置](usage/skills.md) | 启用或禁用 skill，控制自动调用，设置全局和工作区规则 | skills、`skills.config`、`projects`、调用策略 |
-| [本地后台服务](usage/local-daemon.md) | 交互会话默认使用内嵌服务，按次启用本地 daemon | daemon、`--no-daemon=false`、`daemon_auto_start` |
 | [Linux 沙箱目录清理](usage/linux-sandbox.md) | 了解临时空目录、自动恢复条件和保留边界 | Linux、bubblewrap、空目录、异常退出 |
 
 ## 维护参考

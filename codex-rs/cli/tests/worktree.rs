@@ -304,7 +304,6 @@ trust_level = "trusted"
     // Every launch, including rejection cases, exercises the same CLI feature opt-in.
     let worktree_args: Vec<String> = vec![
         "--worktree".into(),
-        "--no-daemon=false".into(),
         "--enable".into(),
         "worktrees".into(),
         "--no-alt-screen".into(),

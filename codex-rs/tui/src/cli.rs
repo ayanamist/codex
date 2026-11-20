@@ -80,14 +80,9 @@ pub struct Cli {
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
 
-    /// Use an embedded server by default. Pass --no-daemon=false to allow a local daemon.
-    #[arg(
-        long,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true"
-    )]
-    pub no_daemon: Option<bool>,
+    /// Run without the shared background server, even if it is already running.
+    #[arg(long)]
+    pub no_daemon: bool,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
