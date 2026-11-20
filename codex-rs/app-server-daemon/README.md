@@ -51,7 +51,7 @@ default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
 ```json
 {
   "remoteControlEnabled": false,
-  "shutdownGraceSeconds": 600,
+  "shutdownGraceSeconds": 60,
   "updater": { "autoUpdateEnabled": false, "updateIntervalMinutes": 120 }
 }
 ```
@@ -69,11 +69,14 @@ and running versions. A running daemon restarts, so active or queued work may be
 interrupted; a stopped daemon stays stopped. Installer errors return nonzero.
 The updater uses saved network settings; CLI `-c` overrides do not reach it.
 
-For all managed app-server shutdowns, including explicit stop and restart and
-updater-triggered restarts, `shutdownGraceSeconds` defaults to 600 and accepts
-an integer from 0 through 600. Zero forces shutdown immediately after requesting
-a graceful exit; the ten-minute maximum bounds the wait even if a turn is still
-running.
+For explicit shutdowns, including manual updates, `shutdownGraceSeconds`
+defaults to 60 and accepts an integer from 0 through 300. Zero forces shutdown
+immediately after requesting a graceful exit. Scheduled updates can prepare the
+new package while the existing daemon runs. To activate it, the updater starts
+a drain, waits for running turns and admitted requests to finish, and launches
+the new daemon after the old one exits. There is no force deadline. On Windows,
+scheduled activation requires a running daemon that supports the graceful drain
+request. Older Windows daemons can still be upgraded by an explicit update.
 
 ## Bootstrap flow
 

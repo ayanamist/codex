@@ -290,7 +290,9 @@ async fn shutdown_is_only_accepted_on_managed_local_socket_for_its_own_pid() {
     websocket.close(None).await.expect("confirm receipt");
     assert!(matches!(
         timeout(Duration::from_secs(2), rx.recv()).await,
-        Ok(Some(TransportEvent::DaemonShutdown))
+        Ok(Some(TransportEvent::DaemonShutdown {
+            graceful_only: false
+        }))
     ));
     shutdown.cancel();
     acceptor.await.expect("acceptor shutdown");

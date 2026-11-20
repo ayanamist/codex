@@ -75,9 +75,18 @@ async fn connect_at(socket_path: &Path, url: &str) -> Result<WebSocketStream<Uni
 }
 
 #[cfg(windows)]
-pub(crate) async fn request_shutdown(socket_path: &Path, pid: u32) -> Result<()> {
+pub(crate) async fn request_shutdown(
+    socket_path: &Path,
+    pid: u32,
+    graceful_only: bool,
+) -> Result<()> {
+    let url = if graceful_only {
+        "ws://localhost/daemon/drain"
+    } else {
+        "ws://localhost/daemon/shutdown"
+    };
     timeout(CONTROL_SOCKET_RESPONSE_TIMEOUT, async {
-        let mut websocket = connect_at(socket_path, "ws://localhost/daemon/shutdown").await?;
+        let mut websocket = connect_at(socket_path, url).await?;
         websocket
             .send(Message::Text(pid.to_string().into()))
             .await?;

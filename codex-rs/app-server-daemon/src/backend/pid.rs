@@ -30,7 +30,6 @@ use tokio::time::sleep;
 use crate::settings::DEFAULT_SHUTDOWN_GRACE_SECONDS;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const UPDATER_STOP_GRACE_SECONDS: u32 = 60;
 const STOP_FORCE_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
@@ -167,14 +166,19 @@ impl PidBackend {
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
-        let grace_seconds = match self.command_kind {
-            PidCommandKind::AppServer { .. } => DEFAULT_SHUTDOWN_GRACE_SECONDS,
-            PidCommandKind::UpdateLoop { .. } => UPDATER_STOP_GRACE_SECONDS,
-        };
-        self.stop_with_grace(grace_seconds).await
+        self.stop_with_grace(DEFAULT_SHUTDOWN_GRACE_SECONDS).await
     }
 
     pub(crate) async fn stop_with_grace(&self, grace_seconds: u32) -> Result<()> {
+        self.stop_and_wait(Some(grace_seconds)).await
+    }
+
+    #[cfg(any(unix, windows))]
+    pub(crate) async fn stop_after_turns(&self) -> Result<()> {
+        self.stop_and_wait(None).await
+    }
+
+    async fn stop_and_wait(&self, grace_seconds: Option<u32>) -> Result<()> {
         loop {
             let Some(record) = self.wait_for_pid_start().await? else {
                 return Ok(());
@@ -189,10 +193,15 @@ impl PidBackend {
             let pid = record.pid;
             crate::diagnostics::event("shutdown_requested", serde_json::json!({ "pid": pid }));
             let started_at = tokio::time::Instant::now();
-            let force_after = Duration::from_secs(grace_seconds.into());
-            let deadline = started_at + force_after + STOP_FORCE_TIMEOUT;
+            let force_at =
+                grace_seconds.map(|seconds| started_at + Duration::from_secs(seconds.into()));
+            let deadline = force_at.map(|instant| instant + STOP_FORCE_TIMEOUT);
             #[cfg(unix)]
-            self.terminate_process(pid)?;
+            if force_at.is_some() {
+                self.terminate_process(pid)?;
+            } else {
+                signal_process(pid, libc::SIGHUP)?;
+            }
             #[cfg(windows)]
             let process = {
                 let Some(process) = super::windows::Process::open(pid)? else {
@@ -210,9 +219,16 @@ impl PidBackend {
                             .context("daemon pid path has no Codex home")?;
                         let socket_path =
                             codex_app_server_transport::app_server_control_socket_path(codex_home)?;
-                        if let Err(err) =
-                            crate::client::request_shutdown(socket_path.as_path(), pid).await
+                        if let Err(err) = crate::client::request_shutdown(
+                            socket_path.as_path(),
+                            pid,
+                            /*graceful_only*/ force_at.is_none(),
+                        )
+                        .await
                         {
+                            if force_at.is_none() {
+                                return Err(err);
+                            }
                             tracing::warn!(%pid, %err, "managed app-server shutdown request failed; waiting for force deadline");
                         }
                     }
@@ -239,10 +255,11 @@ impl PidBackend {
                         PidFileState::Starting | PidFileState::Running(_) => break,
                     }
                 }
-                if tokio::time::Instant::now() >= deadline {
+                let now = tokio::time::Instant::now();
+                if deadline.is_some_and(|deadline| now >= deadline) {
                     break;
                 }
-                if !forced && started_at.elapsed() >= force_after {
+                if !forced && force_at.is_some_and(|force_at| now >= force_at) {
                     crate::diagnostics::event("shutdown_forced", serde_json::json!({ "pid": pid }));
                     #[cfg(unix)]
                     self.force_terminate_process(pid)?;
@@ -541,9 +558,14 @@ fn process_exists(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn terminate_process(pid: u32) -> Result<()> {
+    signal_process(pid, libc::SIGTERM)
+}
+
+#[cfg(unix)]
+fn signal_process(pid: u32, signal: libc::c_int) -> Result<()> {
     let raw_pid = libc::pid_t::try_from(pid)
         .with_context(|| format!("pid-managed app server pid {pid} is out of range"))?;
-    let result = unsafe { libc::kill(raw_pid, libc::SIGTERM) };
+    let result = unsafe { libc::kill(raw_pid, signal) };
     if result == 0 {
         return Ok(());
     }

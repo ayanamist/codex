@@ -561,6 +561,7 @@ impl Daemon {
         mode: RestartMode,
         managed_codex_bin: &Path,
         package_root: &Path,
+        wait_for_turns: bool,
     ) -> Result<RestartIfRunningOutcome> {
         let operation_lock = self.open_operation_lock_file().await?;
         if !try_lock_file(&operation_lock)? {
@@ -615,16 +616,20 @@ impl Daemon {
                     diagnostics::event(
                         "restart_requested",
                         serde_json::json!({
-                                "shutdownGraceSeconds": settings.shutdown_grace_seconds,
+                            "shutdownGraceSeconds": (!wait_for_turns).then_some(settings.shutdown_grace_seconds),
                         }),
                     );
                     let started = std::time::Instant::now();
                     diagnostics::result(
                         "shutdown",
                         started,
-                        backend
-                            .stop_with_grace(settings.shutdown_grace_seconds)
-                            .await,
+                        if wait_for_turns {
+                            backend.stop_after_turns().await
+                        } else {
+                            backend
+                                .stop_with_grace(settings.shutdown_grace_seconds)
+                                .await
+                        },
                     )?;
                     let started = std::time::Instant::now();
                     diagnostics::result(

@@ -101,8 +101,10 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
         }),
     )
     .await?;
-    request_shutdown(&server, &socket_path).await?;
+    request_drain(&server, &socket_path).await?;
     assert_still_running(&mut server, "active turn must finish first").await;
+    request_drain(&server, &socket_path).await?;
+    assert_still_running(&mut server, "repeated drain must not interrupt the turn").await;
     release_response.send(()).expect("response is waiting");
     wait_success(&mut server).await?;
     assert_eq!(
@@ -836,9 +838,19 @@ pub(super) fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
 
 #[cfg(unix)]
 async fn request_shutdown(server: &Child, _socket_path: &Path) -> Result<()> {
+    signal_server(server, "-TERM")
+}
+
+#[cfg(unix)]
+async fn request_drain(server: &Child, _socket_path: &Path) -> Result<()> {
+    signal_server(server, "-HUP")
+}
+
+#[cfg(unix)]
+fn signal_server(server: &Child, signal: &str) -> Result<()> {
     let pid = server.id().context("server pid")?;
     let status = StdCommand::new("kill")
-        .arg("-TERM")
+        .arg(signal)
         .arg(pid.to_string())
         .status()?;
     anyhow::ensure!(status.success(), "failed to signal server {pid}: {status}");
@@ -847,10 +859,20 @@ async fn request_shutdown(server: &Child, _socket_path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 async fn request_shutdown(server: &Child, socket_path: &Path) -> Result<()> {
+    request_control_shutdown(server, socket_path, "ws://localhost/daemon/shutdown").await
+}
+
+#[cfg(windows)]
+async fn request_drain(server: &Child, socket_path: &Path) -> Result<()> {
+    request_control_shutdown(server, socket_path, "ws://localhost/daemon/drain").await
+}
+
+#[cfg(windows)]
+async fn request_control_shutdown(server: &Child, socket_path: &Path, url: &str) -> Result<()> {
     let pid = server.id().context("server pid")?.to_string();
     timeout(DEFAULT_READ_TIMEOUT, async {
         let stream = UnixStream::connect(socket_path).await?;
-        let (mut websocket, _) = client_async("ws://localhost/daemon/shutdown", stream).await?;
+        let (mut websocket, _) = client_async(url, stream).await?;
         websocket.send(Message::Text(pid.clone().into())).await?;
         let reply = websocket
             .next()

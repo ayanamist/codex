@@ -239,7 +239,9 @@ debug 和 `0.0.0` 源码构建不进行启动更新检查。
 并要求安装器写入的 `auto-update-version` 与当前选中的包一致。已托管在旧 standalone
 布局中的 fork GNU 包同样适用。首次迁移时先升级 CLI，再用新版 CLI 执行
 `codex app-server daemon update`，因为旧版也会用旧资格规则校验手动更新选中的包。
-更新安装完成后可以发起重启，默认的优雅退出宽限和配置上限均为 600 秒，已有显式配置仍优先。
+定时更新可以先准备新版本包。切换运行中的 daemon 时，旧进程停止接收新 turn，等待运行中的 turn
+与已获准执行的请求结束，再退出并启动新版本。这个流程没有强制退出期限。手动更新和显式停机的
+默认宽限为 60 秒，配置上限为 300 秒。Windows 上的旧 daemon 可通过显式更新迁移到支持定时排空的版本。
 2026-11-20 核对上游历史：官方 [0.125.0](https://github.com/openai/codex/releases/tag/rust-v0.125.0)
 仍附带 GNU CLI，[#19445](https://github.com/openai/codex/pull/19445) 随后移除 GNU 主程序的发布任务。
 [#45546](https://github.com/openai/codex/pull/45546) 拆分 daemon 安装目录时保留了旧布局的

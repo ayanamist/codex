@@ -180,7 +180,7 @@ async fn run_control_socket_acceptor(
 
         let transport_event_tx = transport_event_tx.clone();
         tokio::spawn(async move {
-            let mut shutdown_request = false;
+            let mut shutdown_request = None;
             let mut negotiated_compression = WebSocketCompression::Plain;
             let websocket_config = WebSocketConfig::default();
             let max_unfragmented_message_bytes = [
@@ -194,13 +194,13 @@ async fn run_control_socket_acceptor(
                 stream,
                 |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                  mut response: HandshakeResponse| {
-                    if request.uri().path() == "/daemon/shutdown" {
+                    if matches!(request.uri().path(), "/daemon/shutdown" | "/daemon/drain") {
                         if !matches!(daemon_shutdown_access, DaemonShutdownAccess::Managed) {
                             let mut rejection = Response::new(Some("unmanaged server".to_string()));
                             *rejection.status_mut() = StatusCode::FORBIDDEN;
                             return Err(rejection);
                         }
-                        shutdown_request = true;
+                        shutdown_request = Some(request.uri().path() == "/daemon/drain");
                     } else if compression == WebSocketCompression::Zstd
                         && request
                             .headers()
@@ -231,8 +231,8 @@ async fn run_control_socket_acceptor(
                     return;
                 }
             };
-            if shutdown_request {
-                run_daemon_shutdown(websocket_stream, transport_event_tx).await;
+            if let Some(graceful_only) = shutdown_request {
+                run_daemon_shutdown(websocket_stream, transport_event_tx, graceful_only).await;
                 return;
             }
             let (websocket_writer, websocket_reader) = websocket_stream.split();
@@ -251,6 +251,7 @@ async fn run_control_socket_acceptor(
 async fn run_daemon_shutdown(
     mut websocket: tokio_tungstenite::WebSocketStream<UnixStream>,
     transport_event_tx: mpsc::Sender<TransportEvent>,
+    graceful_only: bool,
 ) {
     let pid = std::process::id().to_string();
     if !matches!(websocket.next().await, Some(Ok(Message::Text(request))) if request == pid) {
@@ -262,7 +263,7 @@ async fn run_daemon_shutdown(
     // Let the manager receive the acknowledgment before the main loop closes connections.
     let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
     let _ = transport_event_tx
-        .send(TransportEvent::DaemonShutdown)
+        .send(TransportEvent::DaemonShutdown { graceful_only })
         .await;
 }
 
