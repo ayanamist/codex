@@ -19,6 +19,18 @@ pub fn application_version() -> &'static str {
     APPLICATION_VERSION.get_or_init(|| BuildInfo::get().version().to_string())
 }
 
+/// Return the revision of a numbered fork release suffix.
+pub fn numbered_fork_revision(suffix: &str) -> Option<u64> {
+    let (revision, hash) = suffix.strip_prefix("fork.")?.split_once(".g")?;
+    let revision = revision.parse::<u64>().ok()?;
+    (revision > 0
+        && hash.len() == 8
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+    .then_some(revision)
+}
+
 /// Compare a channel's latest release with the installed version.
 /// Numbered fork releases compare their upstream base and numeric revision;
 /// the trailing Git hash identifies source without contributing to precedence.
@@ -31,16 +43,7 @@ pub fn is_newer_release(latest: &str, current: &str) -> Option<bool> {
         if suffix.is_empty() {
             return (0, 0, "");
         }
-        if let Some((revision, hash)) = suffix
-            .strip_prefix("fork.")
-            .and_then(|suffix| suffix.split_once(".g"))
-            && let Ok(revision) = revision.parse::<u64>()
-            && revision > 0
-            && hash.len() == 8
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
+        if let Some(revision) = numbered_fork_revision(suffix) {
             return (3, revision, "");
         }
         if let Some(revision) = suffix

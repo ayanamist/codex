@@ -86,17 +86,32 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
     std::fs::remove_file(&marker).expect("pinned selection");
     assert!(!super::is_stable_standalone_release(home.path(), &managed));
 
-    let alpha = standalone.join("releases/0.151.0-alpha.1-aarch64-apple-darwin");
-    let alpha_managed = alpha.join("bin/codex");
-    std::fs::create_dir_all(alpha_managed.parent().expect("alpha bin parent"))
-        .expect("alpha release");
-    std::fs::write(&alpha_managed, b"alpha").expect("alpha bin");
-    std::fs::remove_file(&current).expect("remove current");
-    std::os::unix::fs::symlink(alpha, &current).expect("current alpha");
-    assert!(!super::is_stable_standalone_release(
-        home.path(),
-        &alpha_managed
-    ));
+    for (version, target, eligible) in [
+        ("0.170.0-fork.1.gfdec2f40", "aarch64-apple-darwin", true),
+        ("0.170.0-fork.1.gfdec2f40", "x86_64-unknown-linux-gnu", true),
+        ("0.170.0", "x86_64-unknown-linux-gnu", false),
+        ("0.170.0-fork.0.gfdec2f40", "aarch64-apple-darwin", false),
+        ("0.170.0-fork.1.gfdec2f4", "aarch64-apple-darwin", false),
+        ("0.170.0-fork.fdec2f40", "aarch64-apple-darwin", false),
+        ("0.170.0-alpha.1", "aarch64-apple-darwin", false),
+        ("0.170.0+local", "aarch64-apple-darwin", false),
+    ] {
+        let name = format!("{version}-{target}");
+        let release = standalone.join("releases").join(&name);
+        let managed = release.join("bin/codex");
+        std::fs::create_dir_all(managed.parent().expect("bin parent")).expect("release");
+        std::fs::write(&managed, b"codex").expect("managed bin");
+        std::fs::remove_file(&current).expect("remove current");
+        std::os::unix::fs::symlink(&release, &current).expect("current release");
+        std::fs::write(&marker, &name).expect("latest selection");
+        assert_eq!(
+            super::is_stable_standalone_release(home.path(), &managed),
+            eligible,
+            "{version}"
+        );
+        std::fs::remove_file(&marker).expect("pin selected release");
+        assert!(!super::is_stable_standalone_release(home.path(), &managed));
+    }
 
     let local = standalone.join("local-main");
     let local_managed = local.join("bin/codex");

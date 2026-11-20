@@ -2,7 +2,6 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use super::DaemonSettings;
-use super::MAX_SHUTDOWN_GRACE_SECONDS;
 
 #[tokio::test]
 async fn remote_control_save_preserves_updater_settings() {
@@ -50,25 +49,24 @@ async fn remote_control_save_preserves_updater_settings() {
 }
 
 #[tokio::test]
-async fn shutdown_grace_accepts_zero_through_five_minutes() {
+async fn shutdown_grace_accepts_zero_through_ten_minutes() {
     let temp = TempDir::new().expect("temp dir");
     let path = temp.path().join("settings.json");
     assert_eq!(
-        DaemonSettings::load(&path).await.expect("missing settings"),
-        DaemonSettings::default()
+        DaemonSettings::load(&path)
+            .await
+            .expect("missing settings")
+            .shutdown_grace_seconds,
+        600
     );
     assert_eq!(
         DaemonSettings::load_for_stop(&path)
             .await
             .shutdown_grace_seconds,
-        60
+        600
     );
 
-    for seconds in [
-        0,
-        MAX_SHUTDOWN_GRACE_SECONDS,
-        MAX_SHUTDOWN_GRACE_SECONDS + 1,
-    ] {
+    for (seconds, expected) in [(0, Some(0)), (60, Some(60)), (600, Some(600)), (601, None)] {
         tokio::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({"shutdownGraceSeconds": seconds}))
@@ -76,7 +74,6 @@ async fn shutdown_grace_accepts_zero_through_five_minutes() {
         )
         .await
         .expect("write settings");
-        let expected = (seconds <= MAX_SHUTDOWN_GRACE_SECONDS).then_some(seconds);
         assert_eq!(
             DaemonSettings::load(&path)
                 .await
@@ -88,7 +85,7 @@ async fn shutdown_grace_accepts_zero_through_five_minutes() {
             DaemonSettings::load_for_stop(&path)
                 .await
                 .shutdown_grace_seconds,
-            expected.unwrap_or(60)
+            expected.unwrap_or(600)
         );
     }
 
@@ -100,7 +97,7 @@ async fn shutdown_grace_accepts_zero_through_five_minutes() {
         DaemonSettings::load_for_stop(&path)
             .await
             .shutdown_grace_seconds,
-        60
+        600
     );
 }
 
@@ -139,7 +136,7 @@ async fn telemetry_distinguishes_presence_from_default_values() -> anyhow::Resul
     for (contents, presence) in [
         ("{}", "default"),
         (
-            r#"{"updater":{"autoUpdateEnabled":true,"updateIntervalMinutes":60},"shutdownGraceSeconds":60}"#,
+            r#"{"updater":{"autoUpdateEnabled":true,"updateIntervalMinutes":60},"shutdownGraceSeconds":600}"#,
             "configured",
         ),
     ] {

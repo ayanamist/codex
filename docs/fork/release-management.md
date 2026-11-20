@@ -235,6 +235,17 @@ debug 构建拒绝 update，未知安装布局要求手工更新。
 debug 和 `0.0.0` 源码构建不进行启动更新检查。
 没有用于指定 GitHub 仓库或安装器 URL 的 config.toml 设置。
 
+托管 daemon 的自动更新资格接受 `x.y.z-fork.<正整数序号>.g<8位小写十六进制短哈希>`，
+并要求安装器写入的 `auto-update-version` 与当前选中的包一致。已托管在旧 standalone
+布局中的 fork GNU 包同样适用。首次迁移时先升级 CLI，再用新版 CLI 执行
+`codex app-server daemon update`，因为旧版也会用旧资格规则校验手动更新选中的包。
+更新安装完成后可以发起重启，默认的优雅退出宽限和配置上限均为 600 秒，已有显式配置仍优先。
+2026-11-20 核对上游历史：官方 [0.125.0](https://github.com/openai/codex/releases/tag/rust-v0.125.0)
+仍附带 GNU CLI，[#19445](https://github.com/openai/codex/pull/19445) 随后移除 GNU 主程序的发布任务。
+[#45546](https://github.com/openai/codex/pull/45546) 拆分 daemon 安装目录时保留了旧布局的
+上游更新资格范围。回归检查使用
+`python3 .cache/remote-dev/remote-dev.py test -p codex-app-server-daemon -p codex-build-info --lib`。
+
 ## 证据与核对命令
 
 当前事实以三个工作流、`fork_release.py`、源准备脚本、安装器和对应测试为依据。

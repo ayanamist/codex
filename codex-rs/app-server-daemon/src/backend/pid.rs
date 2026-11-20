@@ -30,6 +30,7 @@ use tokio::time::sleep;
 use crate::settings::DEFAULT_SHUTDOWN_GRACE_SECONDS;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const UPDATER_STOP_GRACE_SECONDS: u32 = 60;
 const STOP_FORCE_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
@@ -166,7 +167,11 @@ impl PidBackend {
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
-        self.stop_with_grace(DEFAULT_SHUTDOWN_GRACE_SECONDS).await
+        let grace_seconds = match self.command_kind {
+            PidCommandKind::AppServer { .. } => DEFAULT_SHUTDOWN_GRACE_SECONDS,
+            PidCommandKind::UpdateLoop { .. } => UPDATER_STOP_GRACE_SECONDS,
+        };
+        self.stop_with_grace(grace_seconds).await
     }
 
     pub(crate) async fn stop_with_grace(&self, grace_seconds: u32) -> Result<()> {

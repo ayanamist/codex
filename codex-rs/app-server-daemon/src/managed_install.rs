@@ -85,10 +85,6 @@ pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) 
     let Some(release_name) = release.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    // GNU packages can seed the new directory; retain legacy updater eligibility.
-    if standalone.ends_with("standalone") && release_name.ends_with("-gnu") {
-        return false;
-    }
     let targets = [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
@@ -105,11 +101,16 @@ pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) 
     else {
         return false;
     };
-    let components: Vec<_> = version.split('.').collect();
-    components.len() == 3
-        && components.iter().all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    let Ok(version) = semver::Version::parse(version) else {
+        return false;
+    };
+    let is_numbered_fork = codex_build_info::numbered_fork_revision(version.pre.as_str()).is_some();
+    // The fork ships GNU packages, including for existing standalone installs.
+    if standalone.ends_with("standalone") && release_name.ends_with("-gnu") && !is_numbered_fork {
+        return false;
+    }
+    version.build.is_empty()
+        && (version.pre.is_empty() || is_numbered_fork)
         && std::fs::read_to_string(standalone.join("auto-update-version"))
             .is_ok_and(|selected| selected == release_name)
         && std::fs::canonicalize(codex_bin).is_ok_and(|bin| bin.starts_with(&release))

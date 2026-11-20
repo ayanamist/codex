@@ -12,8 +12,8 @@ use serde_json::Value;
 use tokio::fs;
 
 pub(crate) const DEFAULT_UPDATE_INTERVAL_MINUTES: u32 = 60;
-pub(crate) const DEFAULT_SHUTDOWN_GRACE_SECONDS: u32 = 60;
-pub(crate) const MAX_SHUTDOWN_GRACE_SECONDS: u32 = 5 * 60;
+pub(crate) const DEFAULT_SHUTDOWN_GRACE_SECONDS: u32 = 10 * 60;
+pub(crate) const MAX_SHUTDOWN_GRACE_SECONDS: u32 = DEFAULT_SHUTDOWN_GRACE_SECONDS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DaemonSettings {

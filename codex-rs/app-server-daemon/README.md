@@ -51,7 +51,7 @@ default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
 ```json
 {
   "remoteControlEnabled": false,
-  "shutdownGraceSeconds": 60,
+  "shutdownGraceSeconds": 600,
   "updater": { "autoUpdateEnabled": false, "updateIntervalMinutes": 120 }
 }
 ```
@@ -70,9 +70,9 @@ interrupted; a stopped daemon stays stopped. Installer errors return nonzero.
 The updater uses saved network settings; CLI `-c` overrides do not reach it.
 
 For all managed app-server shutdowns, including explicit stop and restart and
-updater-triggered restarts, `shutdownGraceSeconds` defaults to 60 and accepts
-an integer from 0 through 300. Zero forces shutdown immediately after requesting
-a graceful exit; the five-minute maximum bounds the wait even if a turn is still
+updater-triggered restarts, `shutdownGraceSeconds` defaults to 600 and accepts
+an integer from 0 through 600. Zero forces shutdown immediately after requesting
+a graceful exit; the ten-minute maximum bounds the wait even if a turn is still
 running.
 
 ## Bootstrap flow
@@ -131,7 +131,8 @@ For dedicated and retained legacy daemon installations:
 - `bootstrap` is supported
 - managed `start`, `restart`, and `bootstrap` ensure a single detached pid-backed
   updater loop only when automatic updates are enabled for a stable latest-channel
-  release whose managed binary supports the updater command
+  release (including numbered fork releases) whose managed binary supports
+  the updater command
 - the installer records the latest-channel selection alongside `current`;
   selecting an explicit release clears it, even if that version is currently
   latest. The updater checks the selection again while holding the install lock
