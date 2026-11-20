@@ -231,7 +231,7 @@ pub(super) async fn start_app_server_for_session_command(
         arg0_paths,
         explicit_remote_endpoint,
     } = options;
-    if cli.no_daemon && explicit_remote_endpoint.is_some() {
+    if cli.no_daemon == Some(true) && explicit_remote_endpoint.is_some() {
         return Err(eyre!("--no-daemon cannot be used with --remote."));
     }
     let loader_overrides = LoaderOverrides::default();
@@ -271,7 +271,7 @@ pub(super) async fn start_app_server_for_session_command(
     }
 
     let workload_identity_selected = codex_login::is_workload_identity_selected();
-    let reuse_implicit_local_daemon = !cli.no_daemon
+    let reuse_implicit_local_daemon = cli.no_daemon != Some(true)
         && !workload_identity_selected
         && super::daemon_startup::config_exclusion(
             &cli_kv_overrides,

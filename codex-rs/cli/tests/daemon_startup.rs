@@ -233,6 +233,9 @@ async fn daemon_startup(command: &str) -> Result<()> {
     );
     env.insert("TERM".into(), "xterm-256color".into());
     let mut args = vec!["--no-alt-screen".to_string()];
+    if command != "agents-no-daemon" {
+        args.push("--no-daemon=false".into());
+    }
     let mut steps: VecDeque<(&str, &[u8])> = VecDeque::new();
     if matches!(
         command,

@@ -605,7 +605,7 @@ pub(super) fn write_test_config(codex_home: &Path, repo_root: &Path) -> Result<(
 }
 
 #[test]
-fn no_daemon_skips_startup_and_discovery() -> Result<()> {
+fn default_embedded_skips_daemon_startup_and_discovery() -> Result<()> {
     for running in [false, true] {
         let workspace = tempfile::tempdir()?;
         let home = tempfile::tempdir()?;
@@ -625,7 +625,7 @@ fn no_daemon_skips_startup_and_discovery() -> Result<()> {
         } else {
             None
         };
-        let mut terminal = PtyCodex::start(workspace.path(), home, &["--no-daemon"])?;
+        let mut terminal = PtyCodex::start(workspace.path(), home, &[])?;
         terminal.wait_for_startup()?;
         terminal.write_input(b"/status")?;
         terminal.wait_for_screen("show current session configuration")?;
@@ -670,6 +670,7 @@ fn auto_daemon_start_failure_exits_with_manual_fallback_hint() -> Result<()> {
         workspace.path(),
         home,
         &[
+            "--no-daemon=false",
             "-c",
             "features.api_key_model_discovery=true",
             "-c",

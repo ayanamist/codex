@@ -36,7 +36,7 @@ pub async fn run_session_queue_command(
     resume: bool,
     options: SessionArchiveCommandOptions,
 ) -> Result<String> {
-    if options.cli.no_daemon && options.explicit_remote_endpoint.is_none() {
+    if options.cli.no_daemon == Some(true) && options.explicit_remote_endpoint.is_none() {
         return Err(eyre!(
             "--no-daemon cannot be used with codex queue. Queuing must discover the shared server to avoid writing through a separate server."
         ));

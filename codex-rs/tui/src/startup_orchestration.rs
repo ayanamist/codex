@@ -13,7 +13,7 @@ pub(super) async fn run_main_inner(
     loader_overrides: LoaderOverrides,
     mut explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
-    if cli.no_daemon && explicit_remote_endpoint.is_some() {
+    if cli.no_daemon == Some(true) && explicit_remote_endpoint.is_some() {
         return Err(std::io::Error::other(
             "--no-daemon cannot be used with --remote.",
         ));
@@ -25,10 +25,10 @@ pub(super) async fn run_main_inner(
     }
     #[cfg(windows)]
     let elevated_warning = if explicit_remote_endpoint.is_none()
-        && !cli.no_daemon
+        && cli.no_daemon == Some(false)
         && codex_app_server_daemon::is_elevated().map_err(std::io::Error::other)?
     {
-        cli.no_daemon = true;
+        cli.no_daemon = Some(true);
         Some(daemon_startup::ELEVATED_LAUNCH_WARNING)
     } else {
         None
@@ -220,7 +220,8 @@ pub(super) async fn run_main_inner(
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     );
-    let reuse_implicit_local_daemon = daemon_exclusion.is_none();
+    let allow_local_daemon = cli.no_daemon == Some(false);
+    let reuse_implicit_local_daemon = allow_local_daemon && daemon_exclusion.is_none();
     let search_forces_embedded = cli.web_search
         && daemon_startup::config_exclusion(
             &cli_kv_overrides[..overrides_before_search],
@@ -572,7 +573,7 @@ pub(super) async fn run_main_inner(
     let auto_start_daemon = cfg!(any(unix, windows))
         && (cli.agents_overview || config.features.enabled(Feature::DaemonAutoStart))
         && implicit_connection
-        && !cli.no_daemon
+        && allow_local_daemon
         && !app_server_target.uses_remote_workspace();
     if auto_start_daemon
         && daemon_exclusion.is_none()
@@ -744,9 +745,10 @@ pub(super) async fn run_main_inner(
     let selection_reason = match (&app_server_target, daemon_exclusion) {
         (AppServerTarget::Remote { .. }, _) => "explicit_remote",
         (AppServerTarget::Cloud, _) => "cloud",
-        _ if cli.agents_overview => "agents",
         _ if elevated_warning.is_some() => "elevated_windows",
         (_, Some("--no-daemon")) => "explicit_no_daemon",
+        (AppServerTarget::Embedded, _) if !allow_local_daemon => "default_embedded",
+        _ if cli.agents_overview => "agents",
         (_, Some(_)) => "incompatible_option",
         _ if auto_start_daemon => "auto_start",
         (AppServerTarget::LocalDaemon { .. }, _) => "existing_daemon",
@@ -811,6 +813,7 @@ pub(super) async fn run_main_inner(
             let reason = match daemon_exclusion {
                 _ if elevated_warning.is_some() => "windows_elevated",
                 Some("--no-daemon") => "explicit_no_daemon",
+                _ if !allow_local_daemon => "default_embedded",
                 Some("--profile") => "profile",
                 Some("--oss") => "oss",
                 Some("--strict-config") => "strict_config",

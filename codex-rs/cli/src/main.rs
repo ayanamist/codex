@@ -345,9 +345,14 @@ struct DebugTraceReduceCommand {
 
 #[derive(Debug, Parser)]
 struct AgentsCommand {
-    /// Run the agents overview with an embedded app server.
-    #[arg(long)]
-    no_daemon: bool,
+    /// Use an embedded server by default. Pass --no-daemon=false to allow a local daemon.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    no_daemon: Option<bool>,
     #[clap(flatten)]
     remote: InteractiveRemoteOptions,
 
@@ -1105,7 +1110,7 @@ async fn dispatch_cli(
     if let Some(options) = agents_options {
         interactive.cwd = options.cwd.clone().or(interactive.cwd.take());
         interactive.no_alt_screen |= options.no_alt_screen;
-        interactive.no_daemon |= options.no_daemon;
+        interactive.no_daemon = options.no_daemon.or(interactive.no_daemon);
     }
     let root_strict_config = interactive.strict_config;
     interactive
@@ -1551,7 +1556,7 @@ async fn dispatch_cli(
             }
         }
         Some(Subcommand::RemoteControl(mut remote_control_cli)) => {
-            remote_control_cli.no_daemon |= interactive.no_daemon;
+            remote_control_cli.no_daemon |= interactive.no_daemon == Some(true);
             let subcommand_name = remote_control_cli.subcommand_name();
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2538,7 +2543,7 @@ async fn run_interactive_tui(
     remote_auth_token_env: Option<String>,
     arg0_paths: Arg0DispatchPaths,
 ) -> std::io::Result<AppExitInfo> {
-    if interactive.no_daemon && remote.is_some() {
+    if interactive.no_daemon == Some(true) && remote.is_some() {
         return Ok(AppExitInfo::fatal(
             "--no-daemon cannot be used with --remote.",
         ));
@@ -2780,7 +2785,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
         interactive.web_search = true;
     }
     interactive.no_alt_screen |= no_alt_screen;
-    interactive.no_daemon |= no_daemon;
+    interactive.no_daemon = no_daemon.or(interactive.no_daemon);
     if strict_config {
         interactive.strict_config = true;
     }
@@ -3994,12 +3999,27 @@ enabled = true
             ("resume", finalize_resume_from_args as fn(&[&str]) -> TuiCli),
             ("fork", finalize_fork_from_args as fn(&[&str]) -> TuiCli),
         ] {
+            assert_eq!(finalize(&["codex", command, "--last"]).no_daemon, None);
             for args in [
                 ["codex", "--no-daemon", command, "--last"],
                 ["codex", command, "--last", "--no-daemon"],
             ] {
-                assert!(finalize(&args).no_daemon);
+                assert_eq!(finalize(&args).no_daemon, Some(true));
             }
+            for args in [
+                ["codex", "--no-daemon=false", command, "--last"],
+                ["codex", command, "--last", "--no-daemon=false"],
+            ] {
+                assert_eq!(finalize(&args).no_daemon, Some(false));
+            }
+            let args = [
+                "codex",
+                "--no-daemon",
+                command,
+                "--last",
+                "--no-daemon=false",
+            ];
+            assert_eq!(finalize(&args).no_daemon, Some(false));
         }
     }
 

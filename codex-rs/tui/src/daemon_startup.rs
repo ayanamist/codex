@@ -66,7 +66,7 @@ pub(super) fn exclusion(
     workload_identity_selected: bool,
     exec_server_url: Option<&std::ffi::OsStr>,
 ) -> Option<&'static str> {
-    if cli.no_daemon {
+    if cli.no_daemon == Some(true) {
         Some("--no-daemon")
     } else if cli.oss {
         Some("--oss")
