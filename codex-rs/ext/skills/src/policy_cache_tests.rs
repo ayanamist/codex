@@ -58,7 +58,7 @@ async fn executor_v2_cache_reprojects_same_discovery_when_workspace_policy_chang
                 }),
             }],
         },
-        turn_id: "same-turn".into(),
+        turn_id: Some("same-turn".into()),
         executor_roots: vec![],
         host_snapshot: None,
         include_host_skills: false,

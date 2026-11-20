@@ -212,7 +212,7 @@ where
                 .providers
                 .list_for_turn(SkillListQuery {
                     skill_config_rules: Default::default(),
-                    turn_id: thread_store.level_id().to_string(),
+                    turn_id: Some(thread_store.level_id().to_string()),
                     executor_roots: Vec::new(),
                     host_snapshot: None,
                     include_host_skills: false,
@@ -357,7 +357,7 @@ where
             let host_skills = step_state.host_catalog.as_ref();
             let query = SkillListQuery {
                 skill_config_rules: Default::default(),
-                turn_id: input.turn_id.clone(),
+                turn_id: Some(input.turn_id.clone()),
                 executor_roots: Vec::new(),
                 host_snapshot: host_snapshot.clone(),
                 include_host_skills: host_skills.is_none() && !host_catalog_in_world_state,

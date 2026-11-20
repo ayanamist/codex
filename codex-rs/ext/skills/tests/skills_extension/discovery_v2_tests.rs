@@ -91,7 +91,7 @@ async fn v2_steps_refresh_metadata_and_preserve_separate_environments() -> TestR
     }
     let query = SkillListQuery {
         skill_config_rules: Default::default(),
-        turn_id: "turn-1".to_string(),
+        turn_id: Some("turn-1".to_string()),
         executor_roots: Vec::new(),
         host_snapshot: None,
         include_host_skills: false,
@@ -299,7 +299,7 @@ async fn v2_empty_failed_and_partial_results_never_load_legacy_roots() -> TestRe
     let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let query = |snapshots| SkillListQuery {
         skill_config_rules: Default::default(),
-        turn_id: "turn-1".to_string(),
+        turn_id: Some("turn-1".to_string()),
         // V2 must ignore this unavailable legacy root.
         executor_roots: vec![AccessedSelectedCapabilityRoot {
             root: &root,
@@ -357,7 +357,7 @@ async fn v2_local_policy_overrides_product_and_invocation_fields_without_mutatin
     let provider = ExecutorSkillProvider::new_with_restriction_product(Some(Product::Codex));
     let mut query = SkillListQuery {
         skill_config_rules: Default::default(),
-        turn_id: "policy".into(),
+        turn_id: Some("policy".into()),
         executor_roots: vec![],
         host_snapshot: None,
         include_host_skills: false,

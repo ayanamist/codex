@@ -680,7 +680,11 @@ impl ConfigLayerStack {
         let mut merged = TomlValue::Table(toml::map::Map::new());
         let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
         for layer in self.layers_low_to_high() {
-            mcp_merge.merge(&mut merged, &layer.config, &layer.project_mcp_names);
+            mcp_merge.merge(
+                &mut merged,
+                &layer.name.effective_values(&layer.config),
+                &layer.project_mcp_names,
+            );
         }
         if let Some(requirements) = &self.model_provider_requirements {
             crate::model_provider_requirements::apply(&mut merged, requirements);
@@ -713,7 +717,7 @@ impl ConfigLayerStack {
         let mut mcp_merge = crate::project_mcp::ProjectMcpMerge::default();
 
         for layer in self.layers_low_to_high() {
-            let config = normalize_key_aliases(&layer.config);
+            let config = normalize_key_aliases(&layer.name.effective_values(&layer.config));
             for name in mcp_merge.merge(&mut merged, &config, &layer.project_mcp_names) {
                 let prefix = format!("mcp_servers.{name}.");
                 origins.retain(|path: &String, _| !path.starts_with(&prefix));
@@ -734,9 +738,12 @@ impl ConfigLayerStack {
             );
         }
 
-        let is_credential_origin =
-            |path: &str| provider_paths.iter().any(|prefix| path.starts_with(prefix));
-        if origins.keys().any(|path| is_credential_origin(path))
+        let needs_effective_origin = |path: &str| {
+            path == "tui.status_line_provider"
+                || path.starts_with("tui.status_line_provider.")
+                || provider_paths.iter().any(|prefix| path.starts_with(prefix))
+        };
+        if origins.keys().any(|path| needs_effective_origin(path))
             && let Some(layer) = self.layers_low_to_high().next_back()
         {
             let effective = self.effective_config();
@@ -749,7 +756,7 @@ impl ConfigLayerStack {
                 &include,
             );
             origins.retain(|path, _| {
-                !is_credential_origin(path) || effective_origins.contains_key(path)
+                !needs_effective_origin(path) || effective_origins.contains_key(path)
             });
         }
 

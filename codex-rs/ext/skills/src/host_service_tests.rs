@@ -1132,7 +1132,7 @@ skills.config = [{{ name = "research", enabled = true, policy = {{ products = []
         let catalog = crate::HostSkillProvider::new()
             .list(crate::provider::SkillListQuery {
                 skill_config_rules: snapshot.config_rules().clone(),
-                turn_id: "policy-test".into(),
+                turn_id: Some("policy-test".into()),
                 executor_roots: vec![],
                 host_snapshot: Some(Arc::new(snapshot.clone())),
                 include_host_skills: true,

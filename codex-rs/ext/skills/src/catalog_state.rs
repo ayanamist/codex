@@ -67,7 +67,7 @@ impl SkillCatalogState {
 }
 
 /// Keeps cloud metadata within one published auth scope and Apps availability state.
-/// Warning-free discovery is reused until the Apps resource generation changes.
+/// Accepted discovery, including partial catalogs, is reused until auth or resources change.
 /// A published refresh replaces the Arc so late reads cannot populate its successor.
 pub(crate) struct CloudSkillGeneration {
     pub(crate) auth_cache_key: Option<McpResourceClientAuthKey>,
@@ -125,7 +125,7 @@ impl CachedExecutorV2Catalog {
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutorCatalogCacheKey {
     pub(crate) skill_config_rules: codex_config::SkillConfigRules,
-    pub(crate) turn_id: String,
+    pub(crate) turn_id: Option<String>,
     pub(crate) roots: Vec<(SelectedCapabilityRoot, EnvironmentAccessKey)>,
     pub(crate) include_bundled_skills: bool,
 }

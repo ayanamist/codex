@@ -1,6 +1,6 @@
 # Fork 发布工作流
 
-范围：`ayanamist/codex`；核对日期：2026-11-18；工作区版本：`0.170.0`。
+范围：`ayanamist/codex`；核对日期：2026-11-20；工作区版本：`0.171.0`。
 关键词：GitHub Actions、release、workflow_dispatch、latest、三平台。
 
 | 平台 | 工作流 |
@@ -12,6 +12,11 @@
 三个工作流独立完成解析、构建和上传，公共步骤变更必须同步到三个文件。
 向 `fork-release` 推送代码触发预发布；纯文档推送被路径过滤忽略。
 只修改某个平台的工作流时，不触发另外两个平台；过时提交检查也使用相同的排除规则。
+
+三个工作流从 `codex-rs/rust-toolchain.toml` 读取 Rust 版本。本次上游标签将其更新为
+`1.99.1`。上游 Bazel 发布矩阵和 GCS 缓存仅对 `openai/codex` 的受保护标签启用，
+fork 继续使用 Cargo 构建。可使用 `actionlint .github/workflows/rust-release-{linux,macos,windows}.yml`
+检查三个工作流。
 
 失败时，在对应工作流选择 **Re-run failed jobs**；也可以在 `fork-release` 上使用
 **Run workflow** 手动运行。当前没有编译缓存测量开关，工作流不使用 sccache。
