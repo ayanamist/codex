@@ -4793,7 +4793,7 @@ impl Config {
             allow_persistent_dynamic_tool_updates: false,
             extra_config: None,
             bypass_hook_trust,
-            file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
+            file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::Auto),
             mcp_launch_cwds: Arc::default(),
             codex_self_exe,
             codex_linux_sandbox_exe,

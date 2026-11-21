@@ -7838,6 +7838,8 @@
       "oneOf": [
         {
           "enum": [
+            "auto",
+            "zed",
             "vscode",
             "vscode-insiders",
             "windsurf",
@@ -8881,7 +8883,7 @@
           "$ref": "#/definitions/UriBasedFileOpener"
         }
       ],
-      "description": "Optional URI-based file opener. If set, citations to files in the model output will be hyperlinked using the specified URI scheme."
+      "description": "External editor for file citations when the TUI document viewer is unavailable. Defaults to automatic detection from TERM_PROGRAM."
     },
     "forced_chatgpt_workspace_id": {
       "allOf": [

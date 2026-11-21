@@ -911,6 +911,10 @@ impl App {
         self.transcript_view.agent_links = self
             .side_retention_enabled(tui)
             .then(|| app_server.backend_id());
+        crate::terminal_hyperlinks::set_local_file_links(
+            !app_server.uses_remote_workspace()
+                && crate::projectless::has_only_local_environments(&self.environment_manager),
+        );
         self.transcript_view.document_links = self.document_preview_available(tui, app_server);
         crate::markdown_render::preferences::set_document_links(
             self.transcript_view.document_links,
@@ -1186,7 +1190,7 @@ impl App {
                                     agent,
                                 });
                             }
-                            ReaderLink::External(url) => self.open_url_in_browser(url),
+                            ReaderLink::External(url) => self.open_transcript_link(url),
                             ReaderLink::Document(link) => self.open_url_in_browser(link.path),
                         }
                     }

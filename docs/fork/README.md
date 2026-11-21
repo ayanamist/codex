@@ -10,6 +10,7 @@
 | [项目 MCP 配置](usage/project-mcp.md) | 直接使用项目 `.mcp.json`，配置本地进程或 HTTP 服务，处理变量和覆盖规则 | MCP、JSONC、headers、环境变量、信任 |
 | [Skill 配置](usage/skills.md) | 启用或禁用 skill，控制自动调用，设置全局和工作区规则 | skills、`skills.config`、`projects`、调用策略 |
 | [Linux 沙箱目录清理](usage/linux-sandbox.md) | 了解临时空目录、自动恢复条件和保留边界 | Linux、bubblewrap、空目录、异常退出 |
+| [对话文件链接](usage/file-links.md) | 查看绝对路径、用内置查看器或宿主编辑器打开文件 | TUI、`file_opener`、`TERM_PROGRAM`、Zed |
 
 ## 维护参考
 

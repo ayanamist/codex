@@ -35,7 +35,7 @@ fn supported_elements_preserve_structure_at_narrow_and_wide_widths() {
 fn transformed_content_copies_visible_text_without_active_html_or_images() {
     for (source, expected) in [
         ("Soft break\nsame paragraph.", "Soft break\nsame paragraph."),
-        ("[**local**](/repo/file.rs)", "**local** (repo/file.rs)"),
+        ("[**local**](/repo/file.rs)", "**local** (/repo/file.rs)"),
         (
             "[label][reference]\n\n[reference]: https://example.com",
             "[label (https://example.com)](https://example.com)",

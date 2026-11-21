@@ -90,7 +90,7 @@ async fn document_preview_scenario() -> Result<()> {
     enable_side_retention(&mut app)?;
     crate::markdown_render::preferences::set_document_links(/*enabled*/ true);
     let enabled = side_frame(&mut app, &mut tui, size)?;
-    assert!(!enabled.contains("guide.md"));
+    assert!(enabled.contains("guide.md"));
     let press = link_press(&enabled, "Guide");
     let release = MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),

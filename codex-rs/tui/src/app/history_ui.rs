@@ -294,6 +294,23 @@ impl App {
         self.insert_pending_usage_output(tui);
     }
 
+    pub(crate) fn open_transcript_link(&mut self, url: String) {
+        if crate::terminal_hyperlinks::is_editor_file_url(&url) {
+            let events = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                if let Err(err) = open_editor_file_url(&url).await {
+                    events.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!(
+                            "Failed to open file in editor: {err}"
+                        )),
+                    )));
+                }
+            });
+        } else {
+            self.open_url_in_browser(url);
+        }
+    }
+
     pub(super) fn open_url_in_browser(&mut self, url: String) {
         if let Err(err) = webbrowser::open(&url) {
             self.chat_widget
@@ -440,6 +457,41 @@ impl App {
         self.backtrack = BacktrackState::default();
         self.backtrack_render_pending = false;
         self.skill_load_warnings.clear();
+    }
+}
+
+async fn open_editor_file_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command.arg("-NoProfile").arg("-Command").arg(format!(
+            "Start-Process -FilePath {}",
+            powershell_single_quoted_string(url)
+        ));
+        command
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = {
+        let mut command = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        });
+        command.arg(url);
+        command
+    };
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "editor URI handler exited with {status}"
+        )))
     }
 }
 

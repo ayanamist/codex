@@ -24,6 +24,7 @@ pub(crate) struct TranscriptOverlay {
     content_area: Rect,
     cursor: Option<(u16, u16)>,
     notice: Option<String>,
+    pending_editor_url: Option<String>,
     pub(crate) browsing_footer: Option<Line<'static>>,
     find_transcript: Vec<crate::key_hint::KeyBinding>,
     select_transcript: Vec<crate::key_hint::KeyBinding>,
@@ -64,6 +65,7 @@ impl TranscriptOverlay {
             content_area: Rect::default(),
             cursor: None,
             notice: None,
+            pending_editor_url: None,
             browsing_footer: None,
             find_transcript: Vec::new(),
             select_transcript: Vec::new(),
@@ -511,6 +513,10 @@ impl TranscriptOverlay {
         }
     }
 
+    pub(crate) fn take_editor_url(&mut self) -> Option<String> {
+        self.pending_editor_url.take()
+    }
+
     fn apply_action(&mut self, tui: &mut tui::Tui, action: ViewAction) {
         self.notice = None;
         let resume_following = matches!(action, ViewAction::CopyAndFollow(_));
@@ -543,10 +549,12 @@ impl TranscriptOverlay {
                 Ok(status) => status.message("selection"),
                 Err(error) => error,
             });
-        } else if let ViewAction::OpenLink(url) = action
-            && let Err(error) = webbrowser::open(&url)
-        {
-            self.notice = Some(format!("Could not open link: {error}"));
+        } else if let ViewAction::OpenLink(url) = action {
+            if crate::terminal_hyperlinks::is_editor_file_url(&url) {
+                self.pending_editor_url = Some(url);
+            } else if let Err(error) = webbrowser::open(&url) {
+                self.notice = Some(format!("Could not open link: {error}"));
+            }
         }
     }
 

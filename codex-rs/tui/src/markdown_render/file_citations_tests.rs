@@ -32,7 +32,7 @@ fn file_citation_paths_preserve_markdown_significant_characters() {
 }
 
 #[test]
-fn file_url_citation_preserves_literal_query_delimiters_snapshot() {
+fn file_url_citation_preserves_literal_query_delimiters() {
     let cwd = std::env::temp_dir();
     let directory = url::Url::from_directory_path(&cwd).unwrap();
     for (cwd, directory) in [
@@ -41,9 +41,12 @@ fn file_url_citation_preserves_literal_query_delimiters_snapshot() {
         (Path::new("C:/repo"), "file://localhost/C:/repo/"),
     ] {
         let markdown = format!(":codex-file-citation{{path=\"{directory}report?final.xlsx\"}}");
-        insta::allow_duplicates! {
-            insta::assert_snapshot!(rendered_text(&markdown, Some(cwd)), @"report?final.xlsx");
-        }
+        assert_eq!(
+            rendered_text(&markdown, Some(cwd)),
+            cwd.join("report?final.xlsx")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
     }
 }
 
@@ -147,7 +150,13 @@ fn multiple_file_citations_render_without_interpreting_encoded_source() {
 
     assert_eq!(
         rendered_text(&markdown, Some(&cwd)),
-        r#":codex-file-citation{path="ignored.xlsx"} reports/final%20report.xlsx and second.xlsx"#,
+        format!(
+            r#":codex-file-citation{{path="ignored.xlsx"}} {} and {}"#,
+            cwd.join("reports/final%20report.xlsx")
+                .to_string_lossy()
+                .replace('\\', "/"),
+            second.to_string_lossy().replace('\\', "/"),
+        ),
     );
 
     // A work budget must not become a fixed count limit on legitimate citations.
@@ -168,14 +177,19 @@ fn file_citations_preserve_adjacent_entities_and_escaped_punctuation() {
         "α/tmp/$x$/report.mdβ",
     );
     let cwd = std::env::temp_dir();
+    let path = |name| cwd.join(name).to_string_lossy().replace('\\', "/");
     for (markdown, expected) in [
         (
             r#"Préface &amp;:codex-file-citation{path="first&amp;.txt"}&#x1F642;:codex-file-citation{path="second.txt"}&lt;fin&gt;"#,
-            "Préface &first&amp;.txt🙂second.txt<fin>",
+            format!(
+                "Préface &{}🙂{}<fin>",
+                path("first&amp;.txt"),
+                path("second.txt")
+            ),
         ),
         (
             r#"\[:codex-file-citation{path="first.txt"}\]\*:codex-file-citation{path="second.txt"}\!"#,
-            "[first.txt]*second.txt!",
+            format!("[{}]*{}!", path("first.txt"), path("second.txt")),
         ),
     ] {
         assert_eq!(rendered_text(markdown, Some(&cwd)), expected);
@@ -183,7 +197,7 @@ fn file_citations_preserve_adjacent_entities_and_escaped_punctuation() {
 }
 
 #[test]
-fn file_citation_after_local_link_soft_break_starts_a_new_line_snapshot() {
+fn file_citation_after_local_link_soft_break_starts_a_new_line() {
     let cwd = std::env::temp_dir();
     let markdown = format!(
         "[first](<{}>)\n:codex-file-citation{{path=\"second.txt\"}}",
@@ -191,10 +205,14 @@ fn file_citation_after_local_link_soft_break_starts_a_new_line_snapshot() {
     );
     let rendered = rendered_text(&markdown, Some(&cwd));
 
-    insta::assert_snapshot!(rendered, @r"
-    first (first.txt)
-    second.txt
-    ");
+    assert_eq!(
+        rendered,
+        format!(
+            "first ({})\n{}",
+            cwd.join("first.txt").to_string_lossy().replace('\\', "/"),
+            cwd.join("second.txt").to_string_lossy().replace('\\', "/"),
+        ),
+    );
 }
 
 #[test]

@@ -2106,6 +2106,11 @@ async fn run_ratatui_app(
 
     let local_settings = crate::local_settings::LocalSettings::for_tui(&config, &tui);
     crate::markdown_render::preferences::init(local_settings.tui.rendering);
+    crate::terminal_hyperlinks::configure_file_opener(config.file_opener);
+    crate::terminal_hyperlinks::set_local_file_links(
+        !app_server_target.uses_remote_workspace()
+            && crate::projectless::has_only_local_environments(&environment_manager),
+    );
     crate::markdown_render::preferences::set_document_links(
         local_settings.workspace_enabled(&config)
             && app_server_target.thread_params_mode() != ThreadParamsMode::Cloud,

@@ -102,7 +102,11 @@ pub(super) fn is_local_path_like_link(dest_url: &str) -> bool {
 /// `~/...`, Windows paths, and `#L..C..` or `:line:col` suffixes.
 pub(super) fn render_local_link_target(dest_url: &str, cwd: Option<&Path>) -> Option<String> {
     let (path_text, location_suffix) = parse_local_link_target(dest_url)?;
-    let mut rendered = display_local_link_path(&path_text, cwd);
+    let mut rendered = if super::preferences::absolute_transcript_paths() {
+        absolute_path_for_display(&path_text, cwd)
+    } else {
+        display_local_link_path(&path_text, cwd)
+    };
     if let Some(location_suffix) = location_suffix {
         rendered.push_str(&location_suffix);
     }
@@ -242,6 +246,25 @@ fn strip_local_path_prefix<'a>(path_text: &'a str, cwd_text: &str) -> Option<&'a
     path_text
         .strip_prefix(cwd_text)
         .and_then(|rest| rest.strip_prefix('/'))
+}
+
+pub(super) fn absolute_path_for_display(path: &str, cwd: Option<&Path>) -> String {
+    if let Some(cwd) = cwd
+        && !path.starts_with("~/")
+        && !is_absolute_local_link_path(path)
+    {
+        let cwd = normalize_local_link_path_text(&cwd.to_string_lossy());
+        if is_absolute_local_link_path(&cwd) {
+            return format!(
+                "{}/{}",
+                cwd.trim_end_matches('/'),
+                path.trim_start_matches("./")
+            );
+        }
+        path.to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 /// Choose the visible path text for a local link after normalization.

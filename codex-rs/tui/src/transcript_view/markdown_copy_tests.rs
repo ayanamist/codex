@@ -134,8 +134,8 @@ fn inline_code_selection_copies_only_selected_content() {
         (r"before ``real\_literal\!`` after", r"real\_literal\!"),
         ("before [`foo_bar!`](/repo/foo_bar!) after", "repo/foo_bar!"),
         ("before [`foo_bar!`](/repo/foo_bar!) after", "bar!"),
-        ("[](/foo_bar!)[](/baz_qux!)", "foo_bar!baz_qux!"),
-        ("`foo_bar!`[](/baz_qux!)", "foo_bar!baz_qux!"),
+        ("[](/foo_bar!)[](/baz_qux!)", "foo_bar!/baz_qux!"),
+        ("`foo_bar!`[](/baz_qux!)", "foo_bar!/baz_qux!"),
         ("before **[file](/repo/foo_bar!)** after", "foo_bar!"),
         (
             "| File |\n|---|\n| [`foo_bar!`](/repo/foo_bar!) |",
@@ -166,11 +166,11 @@ fn inline_code_selection_copies_only_selected_content() {
 #[test]
 fn mixed_file_targets_preserve_markdown_escaping() {
     for (source, expected) in [
-        ("before [+](/+) after", "before + (+) after"),
-        ("before [1.)](</1.)>) after", "before 1.) (1.)) after"),
+        ("before [+](/+) after", "before + (/+) after"),
+        ("before [1.)](</1.)>) after", "before 1.) (/1.)) after"),
         (
             "| File |\n|---|\n| [`foo_bar!`](/repo/foo_bar!) |",
-            "| File |\n|---|\n| `foo_bar!` (repo/foo\\_bar\\!) |",
+            "| File |\n|---|\n| `foo_bar!` (/repo/foo\\_bar\\!) |",
         ),
     ] {
         let layout = markdown_layout(source, /*width*/ 80);
@@ -553,10 +553,10 @@ fn link_entities_are_not_decoded_twice() {
 fn selected_local_link_keeps_one_visible_destination() {
     let layout = markdown_layout("Open [**label**](/repo/file.rs).", /*width*/ 80);
     let copied = payload(&layout, 0..layout.text().len()).0;
-    assert_eq!(copied, "Open **label** (repo/file.rs).");
+    assert_eq!(copied, "Open **label** (/repo/file.rs).");
     assert_eq!(
         crate::clipboard_html::render_markdown(&copied),
-        "<p>Open <strong>label</strong> (repo/file.rs).</p>\n"
+        "<p>Open <strong>label</strong> (/repo/file.rs).</p>\n"
     );
 }
 

@@ -203,6 +203,12 @@ pub struct WindowsToml {
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, JsonSchema)]
 pub enum UriBasedFileOpener {
+    #[serde(rename = "auto")]
+    Auto,
+
+    #[serde(rename = "zed")]
+    Zed,
+
     #[serde(rename = "vscode")]
     VsCode,
 

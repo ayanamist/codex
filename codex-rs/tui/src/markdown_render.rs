@@ -521,10 +521,6 @@ struct LinkState {
     local_label_inline: Vec<Vec<crate::markdown_copy::Inline>>,
 }
 
-fn should_render_link_destination(dest_url: &str) -> bool {
-    !is_local_path_like_link(dest_url)
-}
-
 /// Stateful pulldown-cmark event consumer that builds styled `ratatui` output.
 ///
 /// Tracks inline style nesting, indent/blockquote context, list numbering,
@@ -2324,13 +2320,15 @@ impl<'a, 'policy> Writer<'a, 'policy> {
         if style_label {
             self.push_inline_style(self.styles.link);
         }
-        let show_destination = !style_label && should_render_link_destination(&dest_url);
+        let local_target = is_local_path_like_link(&dest_url)
+            || (preferences::absolute_transcript_paths() && sidebar_file_link(&dest_url).is_some());
+        let show_destination = !style_label && !local_target;
         self.link = Some(LinkState {
             source,
             show_destination,
             style_label,
             has_visible_label: false,
-            local_target_display: if !style_label && is_local_path_like_link(&dest_url) {
+            local_target_display: if !style_label && local_target {
                 Some(
                     render_local_link_target(&dest_url, self.cwd.as_deref())
                         .unwrap_or_else(|| dest_url.clone()),
@@ -2347,7 +2345,7 @@ impl<'a, 'policy> Writer<'a, 'policy> {
     fn pop_link(&mut self) {
         if let Some(mut link) = self.link.take() {
             if link.style_label
-                && !link.has_visible_label
+                && (!link.has_visible_label || preferences::absolute_transcript_paths())
                 && local_links::sidebar_file_link(&link.destination).is_some()
             {
                 link.local_target_display = Some(
@@ -2386,6 +2384,7 @@ impl<'a, 'policy> Writer<'a, 'policy> {
                     .unwrap_or_default()
                     .patch(self.styles.code);
                 let span = Span::styled(local_target_display, style);
+                let parenthesize = show_label || (link.style_label && link.has_visible_label);
                 if self.in_table_cell() {
                     if show_label {
                         for (label_span, inline) in link
@@ -2397,12 +2396,14 @@ impl<'a, 'policy> Writer<'a, 'policy> {
                             self.push_span_to_table_cell(label_span);
                             self.copy_inline = previous;
                         }
+                    }
+                    if parenthesize {
                         self.push_span_to_table_cell(" (".into());
                     }
                     self.copy_inline.push(crate::markdown_copy::Inline::Literal);
                     self.push_link_target(span, &link.destination, link.source);
                     self.copy_inline.pop();
-                    if show_label {
+                    if parenthesize {
                         self.push_span_to_table_cell(")".into());
                     }
                 } else {
@@ -2419,12 +2420,14 @@ impl<'a, 'policy> Writer<'a, 'policy> {
                             self.push_span(label_span);
                             self.copy_inline = previous;
                         }
+                    }
+                    if parenthesize {
                         self.push_span(" (".into());
                     }
                     self.copy_inline.push(crate::markdown_copy::Inline::Literal);
                     self.push_link_target(span, &link.destination, link.source);
                     self.copy_inline.pop();
-                    if show_label {
+                    if parenthesize {
                         self.push_span(")".into());
                     }
                     self.line_ends_with_local_link_target = true;
@@ -2435,7 +2438,11 @@ impl<'a, 'policy> Writer<'a, 'policy> {
 
     fn label_document_path(&self) -> Option<FileLink> {
         let link = self.link.as_ref().filter(|link| link.style_label)?;
-        local_links::sidebar_file_link(&link.destination)
+        let mut file = local_links::sidebar_file_link(&link.destination)?;
+        if preferences::absolute_transcript_paths() {
+            file.path = local_links::absolute_path_for_display(&file.path, self.cwd.as_deref());
+        }
+        Some(file)
     }
 
     fn document_label_span(&self, span: Span<'static>, path: FileLink) -> HyperlinkLine {
@@ -2449,7 +2456,10 @@ impl<'a, 'policy> Writer<'a, 'policy> {
 
     fn push_link_target(&mut self, span: Span<'static>, destination: &str, source: usize) {
         let mut target = HyperlinkLine::default();
-        if let Some(link) = sidebar_file_link(destination) {
+        if let Some(mut link) = sidebar_file_link(destination) {
+            if preferences::absolute_transcript_paths() {
+                link.path = local_links::absolute_path_for_display(&link.path, self.cwd.as_deref());
+            }
             let width = span_width(&span);
             target.line.push_span(span);
             target

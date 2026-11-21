@@ -275,7 +275,7 @@ fn finalized_markdown_reuses_rendered_transcript_lines() {
 }
 
 #[test]
-fn finalized_assistant_file_citation_renders_as_local_path_snapshot() {
+fn finalized_assistant_file_citation_renders_as_absolute_path() {
     let cwd = std::env::temp_dir();
     let output = cwd.join("Quarterly Report.xlsx").display().to_string();
     let cell = AgentMarkdownCell::new(
@@ -287,7 +287,10 @@ fn finalized_assistant_file_citation_renders_as_local_path_snapshot() {
 
     let rendered = ratatui::text::Text::from(cell.display_lines(/*width*/ 80));
 
-    insta::assert_snapshot!(rendered, @"• Generated Quarterly Report.xlsx.");
+    assert_eq!(
+        rendered.to_string(),
+        format!("• Generated {}.", output.replace('\\', "/"))
+    );
 }
 
 #[test]
@@ -416,6 +419,22 @@ fn spoken_artifacts_link_only_real_workspace_files_and_preserve_existing_urls() 
             .filter_map(crate::terminal_hyperlinks::TerminalHyperlink::terminal_destination)
             .collect::<Vec<_>>(),
         vec![expected],
+    );
+    let spaced_workspace = workspace.path().join("project files");
+    std::fs::create_dir(&spaced_workspace).expect("workspace with a space");
+    let report = spaced_workspace.join("report.md");
+    std::fs::write(&report, "# Report").expect("report file");
+    let linked = AgentMarkdownCell::new_spoken("[Report](report.md)".into(), &spaced_workspace);
+    let expected = url::Url::from_file_path(report.canonicalize().expect("canonical report"))
+        .expect("workspace file URL")
+        .to_string();
+    assert!(
+        linked
+            .display_hyperlink_lines(/*width*/ 90)
+            .iter()
+            .flat_map(|line| &line.hyperlinks)
+            .filter_map(crate::terminal_hyperlinks::TerminalHyperlink::terminal_destination)
+            .any(|destination| destination == expected)
     );
     let bare = AgentMarkdownCell::new_spoken("src/lib.rs".to_string(), workspace.path());
     assert_eq!(

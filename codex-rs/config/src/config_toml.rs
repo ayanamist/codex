@@ -395,8 +395,8 @@ pub struct ConfigToml {
     /// A managed `sqlite_home` requirement keeps SQLite logs in that required directory.
     pub log_dir: Option<AbsolutePathBuf>,
 
-    /// Optional URI-based file opener. If set, citations to files in the model
-    /// output will be hyperlinked using the specified URI scheme.
+    /// External editor for file citations when the TUI document viewer is unavailable.
+    /// Defaults to automatic detection from TERM_PROGRAM.
     pub file_opener: Option<UriBasedFileOpener>,
 
     /// Collection of settings that are specific to the TUI.

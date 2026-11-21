@@ -1480,7 +1480,7 @@ impl App {
                     }
                 }
             } else if let ViewAction::OpenLink(url) = action {
-                self.open_url_in_browser(url);
+                self.open_transcript_link(url);
             } else if let ViewAction::OpenAgent(agent) = action
                 && let Some(backend) = self.transcript_view.agent_links
                 && let Some(source) = self.current_displayed_thread_id()

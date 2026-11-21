@@ -17,6 +17,7 @@ use std::num::NonZeroU16;
 use std::ops::Range;
 use std::path::Path;
 
+use codex_config::types::UriBasedFileOpener;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::CellDiffOption;
 use ratatui::buffer::CellWidth;
@@ -42,6 +43,68 @@ use crate::wrapping::RtOptions;
 
 // Destinations are repeated in every linked buffer cell. Leave oversized URLs as plain text.
 const MAX_HYPERLINK_DESTINATION_BYTES: usize = 8 * 1024;
+
+// Only the client process knows which editor owns its terminal.
+static EDITOR_SCHEME: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+static LOCAL_WORKSPACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn configure_file_opener(opener: UriBasedFileOpener) {
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    EDITOR_SCHEME.get_or_init(|| editor_scheme(opener, term_program.as_deref()));
+}
+
+pub(crate) fn set_local_file_links(enabled: bool) {
+    LOCAL_WORKSPACE.store(
+        enabled && !crate::clipboard_copy::is_ssh_session(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn editor_scheme(opener: UriBasedFileOpener, term_program: Option<&str>) -> Option<&'static str> {
+    match opener {
+        UriBasedFileOpener::Auto => match term_program?.to_ascii_lowercase().as_str() {
+            "vscode" => Some("vscode"),
+            "vscode-insiders" => Some("vscode-insiders"),
+            "windsurf" => Some("windsurf"),
+            "cursor" => Some("cursor"),
+            "zed" => Some("zed"),
+            _ => None,
+        },
+        UriBasedFileOpener::VsCode => Some("vscode"),
+        UriBasedFileOpener::VsCodeInsiders => Some("vscode-insiders"),
+        UriBasedFileOpener::Windsurf => Some("windsurf"),
+        UriBasedFileOpener::Cursor => Some("cursor"),
+        UriBasedFileOpener::Zed => Some("zed"),
+        UriBasedFileOpener::None => None,
+    }
+}
+
+fn editor_file_url(scheme: &str, path: &str, location: Option<SourceLocation>) -> Option<String> {
+    if path.starts_with("//") || path.starts_with("\\") || path.chars().any(char::is_control) {
+        return None;
+    }
+    let file = Url::from_file_path(Path::new(path)).ok()?;
+    if file.has_host() {
+        return None;
+    }
+    let mut url = format!("{scheme}://file{}", file.path());
+    if let Some(location) = location {
+        use std::fmt::Write;
+        write!(url, ":{}:{}", location.line, location.column).ok()?;
+    }
+    (url.len() <= MAX_HYPERLINK_DESTINATION_BYTES).then_some(url)
+}
+
+pub(crate) fn is_editor_file_url(url: &str) -> bool {
+    EDITOR_SCHEME
+        .get()
+        .copied()
+        .flatten()
+        .is_some_and(|scheme| {
+            url.strip_prefix(scheme)
+                .is_some_and(|rest| rest.starts_with("://file/"))
+        })
+}
 
 #[derive(Clone, Eq)]
 pub(crate) struct TerminalHyperlink {
@@ -266,7 +329,19 @@ impl TerminalHyperlink {
 
     pub(crate) fn terminal_destination(&self) -> Option<String> {
         match self.destination_kind {
-            DestinationKind::Document(_) | DestinationKind::Agent(_) => None,
+            DestinationKind::Document(location) => {
+                if !LOCAL_WORKSPACE.load(std::sync::atomic::Ordering::Relaxed)
+                    || crate::markdown_render::preferences::document_links_enabled()
+                {
+                    return None;
+                }
+                editor_file_url(
+                    EDITOR_SCHEME.get().copied().flatten()?,
+                    &self.destination,
+                    location,
+                )
+            }
+            DestinationKind::Agent(_) => None,
             DestinationKind::Web => web_destination(&self.destination),
             DestinationKind::TrustedFile => trusted_file_destination(&self.destination),
         }
@@ -1082,6 +1157,42 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Style;
+
+    #[test]
+    fn editor_file_openers_respect_terminal_detection_and_overrides() {
+        assert_eq!(
+            editor_scheme(UriBasedFileOpener::Auto, Some("Zed")),
+            Some("zed"),
+        );
+        assert_eq!(
+            editor_scheme(UriBasedFileOpener::Auto, Some("vscode")),
+            Some("vscode"),
+        );
+        assert_eq!(editor_scheme(UriBasedFileOpener::Auto, Some("tmux")), None);
+        assert_eq!(editor_scheme(UriBasedFileOpener::None, Some("zed")), None);
+        assert_eq!(
+            editor_scheme(UriBasedFileOpener::Cursor, Some("zed")),
+            Some("cursor"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_file_url_encodes_path_and_preserves_location() {
+        let location = Some(SourceLocation {
+            line: 42,
+            column: 3,
+        });
+        assert_eq!(
+            editor_file_url("zed", "/repo/Guide #1.md", location).as_deref(),
+            Some("zed://file/repo/Guide%20%231.md:42:3"),
+        );
+        assert_eq!(editor_file_url("zed", "relative.md", location), None);
+        assert_eq!(
+            editor_file_url("zed", "//server/repo/guide.md", location),
+            None,
+        );
+    }
 
     #[test]
     fn only_web_destinations_receive_osc8() {

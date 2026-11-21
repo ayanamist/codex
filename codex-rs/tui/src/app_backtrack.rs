@@ -454,6 +454,7 @@ impl App {
                 let _ = tui.set_mouse_capture(tui::MouseCapture::Inherit);
             }
             let completed_copy = result?;
+            let editor_url = t.take_editor_url();
             let close_overlay = t.is_done();
             let select_mode_closed = was_select_mode && (!t.is_select_mode() || close_overlay);
             let pending_follow_id = t.pending_follow_id();
@@ -478,6 +479,9 @@ impl App {
                 if select_exit_key.is_some() {
                     self.backtrack.pending_select_exit_key = None;
                 }
+            }
+            if let Some(url) = editor_url {
+                self.open_transcript_link(url);
             }
             if close_overlay {
                 self.close_transcript_overlay(tui);

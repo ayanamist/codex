@@ -82,7 +82,7 @@ impl App {
         ) {
             self.transcript_view.show_copy_feedback(&result, count);
         } else if let ViewAction::OpenLink(url) = action {
-            self.open_url_in_browser(url);
+            self.open_transcript_link(url);
         } else if let ViewAction::OpenAgent(agent) = action
             && let Some(backend) = view.agent_links
         {

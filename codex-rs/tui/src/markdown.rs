@@ -142,15 +142,17 @@ pub(crate) fn render_markdown_agent_with_list_spacing(
         rewritten.trusted_file_links.contains_key(destination)
             || crate::markdown_render::preferences::hide_transcript_destination(destination)
     };
-    let mut lines = crate::markdown_render::render_with_copy_sources(
-        &normalized,
-        width,
-        cwd,
-        &is_hidden_link_destination,
-        list_spacing,
-        code_sources,
-    )
-    .lines;
+    let mut lines = crate::markdown_render::preferences::with_absolute_transcript_paths(|| {
+        crate::markdown_render::render_with_copy_sources(
+            &normalized,
+            width,
+            cwd,
+            &is_hidden_link_destination,
+            list_spacing,
+            code_sources,
+        )
+        .lines
+    });
     for hyperlink in lines.iter_mut().flat_map(|line| &mut line.hyperlinks) {
         if let Some(link) = rewritten.trusted_file_links.get(&hyperlink.destination) {
             hyperlink.retarget_to_trusted_file(&link.destination);
@@ -171,13 +173,15 @@ pub(crate) fn render_streaming_markdown_agent_with_links_and_cwd(
     list_spacing: ListSpacing,
 ) -> crate::markdown_render::StreamingMarkdownRender {
     let normalized = normalize_markdown_for_rendering(markdown_source);
-    let mut rendered = crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd(
-        &normalized,
-        width,
-        cwd,
-        &crate::markdown_render::preferences::hide_transcript_destination,
-        list_spacing,
-    );
+    let mut rendered = crate::markdown_render::preferences::with_absolute_transcript_paths(|| {
+        crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd(
+            &normalized,
+            width,
+            cwd,
+            &crate::markdown_render::preferences::hide_transcript_destination,
+            list_spacing,
+        )
+    });
     if normalized != markdown_source {
         // Fence unwrapping removes opening/closing lines. A normalized tail that is still a raw
         // suffix necessarily begins after those removed lines, so its boundary can safely be

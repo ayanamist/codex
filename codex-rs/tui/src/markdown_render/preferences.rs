@@ -57,10 +57,26 @@ pub(crate) fn set_document_links(enabled: bool) {
 }
 
 thread_local! {
+    static ABSOLUTE_TRANSCRIPT_PATHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SHOW_LOCAL_PATHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+pub(super) fn absolute_transcript_paths() -> bool {
+    ABSOLUTE_TRANSCRIPT_PATHS.get()
+}
+
+pub(crate) fn with_absolute_transcript_paths<T>(render: impl FnOnce() -> T) -> T {
+    with_flag(&ABSOLUTE_TRANSCRIPT_PATHS, render)
+}
+
 pub(crate) fn with_visible_local_paths<T>(render: impl FnOnce() -> T) -> T {
+    with_flag(&SHOW_LOCAL_PATHS, render)
+}
+
+fn with_flag<T>(
+    flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>,
+    render: impl FnOnce() -> T,
+) -> T {
     struct Restore<'a>(&'a std::cell::Cell<bool>, bool);
 
     impl Drop for Restore<'_> {
@@ -69,7 +85,7 @@ pub(crate) fn with_visible_local_paths<T>(render: impl FnOnce() -> T) -> T {
         }
     }
 
-    SHOW_LOCAL_PATHS.with(|show| {
+    flag.with(|show| {
         let _restore = Restore(show, show.replace(true));
         render()
     })

@@ -117,7 +117,7 @@ fn incremental_render_keeps_final_block_mutable_and_matches_full_render() {
 
 #[test]
 fn incremental_file_citations_preserve_metadata_unicode_and_markdown() {
-    let cwd = test_cwd();
+    let cwd = Path::new("/repo");
     let rendered_cases = [
         (
             "Quarterly Report.xlsx",
@@ -128,15 +128,26 @@ fn incremental_file_citations_preserve_metadata_unicode_and_markdown() {
     .map(|(filename, prefix)| {
         let tail = format!("path=\"{}\"}}\n", cwd.join(filename).display());
         let chunks = ["# Output\n\n", prefix, &tail, "\n", "Continue.\n"];
-        let (_, render) = crate::terminal_palette::with_test_default_colors(
+        crate::terminal_palette::with_test_default_colors(
             crate::terminal_probe::DefaultColors {
                 fg: (220, 220, 220),
                 bg: (20, 20, 20),
             },
-            || assert_rich_stream_matches_full_render(&chunks, /*width*/ Some(80)),
-        );
-
-        render.lines
+            || {
+                let mut source = String::new();
+                let mut render = StreamingRender::new();
+                for chunk in chunks {
+                    append_rich_and_assert_matches_full(
+                        &mut render,
+                        &mut source,
+                        chunk,
+                        /*width*/ Some(80),
+                        cwd,
+                    );
+                }
+                render.lines
+            },
+        )
     });
     assert_eq!(
         rendered_cases.each_ref().map(|lines| lines

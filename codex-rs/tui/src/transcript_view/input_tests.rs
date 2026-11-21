@@ -232,7 +232,7 @@ fn workspace_file_links_show_the_title_with_subtle_hover_and_open_the_same_locat
     crate::markdown_render::preferences::set_document_links(/*enabled*/ true);
     let (mut view, cells) = transcript(
         "[Guide](./guide.md#L3C2) and [](./guide.md#L3C2)",
-        /*width*/ 32,
+        /*width*/ 64,
     );
     view.document_links = true;
     let area = view.area;
@@ -268,13 +268,13 @@ fn workspace_file_links_show_the_title_with_subtle_hover_and_open_the_same_locat
         assert_eq!(
             link,
             FileLink {
-                path: "./guide.md".to_string(),
+                path: "/guide.md".to_string(),
                 location: Some(SourceLocation { line: 3, column: 2 }),
             },
         );
     }
     insta::assert_snapshot!(observations.join("\n"), @"
-    • Guide and ./guide.md:3:2
+    • Guide (/guide.md:3:2) and /guide.md:3:2
     title: underline=true, hover bold=true, background unchanged=true
     filename: underline=false, hover bold=true, background unchanged=true
     ");

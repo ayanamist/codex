@@ -50,6 +50,8 @@ pub(super) fn annotate_spoken_artifacts(lines: &mut [HyperlinkLine], cwd: &Path)
             if inspected > MAX_ARTIFACT_CANDIDATES {
                 break 'lines;
             }
+            let relative = Path::new(path).strip_prefix(cwd).ok();
+            let path = relative.and_then(Path::to_str).unwrap_or(path);
             let Some(file) = TrustedWorkspaceFile::validate(cwd, path) else {
                 continue;
             };
@@ -107,6 +109,24 @@ pub(super) fn annotate_spoken_artifacts(lines: &mut [HyperlinkLine], cwd: &Path)
                         .spans
                         .push(Span::styled(content[end..].to_string(), style));
                 }
+            }
+        }
+        // A rendered file path can contain spaces or wrap across lines. Its document
+        // metadata retains the full path even when the word scan cannot recover it.
+        for link in line
+            .hyperlinks
+            .iter_mut()
+            .filter(|link| link.is_document())
+            .take(MAX_ARTIFACT_CANDIDATES.saturating_sub(inspected))
+        {
+            inspected += 1;
+            if let Some(relative) = Path::new(&link.destination)
+                .strip_prefix(cwd)
+                .ok()
+                .and_then(Path::to_str)
+                && let Some(file) = TrustedWorkspaceFile::validate(cwd, relative)
+            {
+                *link = TerminalHyperlink::trusted_workspace_file(link.columns.clone(), file);
             }
         }
         line.hyperlinks.sort_by_key(|link| link.columns.start);
