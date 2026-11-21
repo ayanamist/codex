@@ -428,6 +428,7 @@ async fn stale_rate_limit_read_does_not_dismiss_visible_workspace_advisory() -> 
         turn_completed_notification(ThreadId::new(), "turn-1", TurnStatus::Completed),
         /*replay_kind*/ None,
     );
+    crate::chatwidget::tests::helpers::show_existing_rate_limit_switch_prompt(&mut app.chat_widget);
     assert!(
         render_bottom_popup(&app.chat_widget, /*width*/ 100).contains("Approaching rate limits")
     );

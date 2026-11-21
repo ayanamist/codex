@@ -321,6 +321,11 @@ pub(super) fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiv
     }
 }
 
+pub(crate) fn show_existing_rate_limit_switch_prompt(chat: &mut ChatWidget) {
+    chat.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
+    chat.maybe_show_pending_rate_limit_prompt();
+}
+
 pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
     chat.has_chatgpt_account = true;
     chat.has_codex_backend_auth = true;

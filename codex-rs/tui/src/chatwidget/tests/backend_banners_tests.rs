@@ -209,7 +209,7 @@ async fn backend_banner_restores_only_programmatically_displaced_switch_prompt()
     for user_dismissed in [false, true] {
         let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5")).await;
         chat.has_chatgpt_account = true;
-        chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 95.0)));
+        chat.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
         chat.maybe_show_pending_rate_limit_prompt();
         assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Approaching rate limits"));
         if user_dismissed {

@@ -1083,7 +1083,7 @@ async fn plan_implementation_popup_skips_when_rate_limit_prompt_pending() {
             status: StepStatus::Pending,
         }],
     });
-    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 92.0)));
+    chat.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
     chat.on_task_complete(
         /*last_agent_message*/ None, /*completion*/ None, /*from_replay*/ false,
     );

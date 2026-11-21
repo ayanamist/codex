@@ -92,7 +92,13 @@ async fn new_session_refreshes_account_for_the_started_provider() -> Result<()> 
         app.chat_widget
             .on_rate_limit_snapshot(Some(snapshot.clone()));
         if provider == "alt" {
-            assert!(app.chat_widget.usage_notice(/*width*/ 100).is_some());
+            let state = serde_json::to_value(app.chat_widget.statusline_state())?;
+            assert!(
+                state["account"]["rate_limits"]
+                    .as_array()
+                    .is_some_and(|limits| !limits.is_empty())
+            );
+            assert!(app.chat_widget.usage_notice(/*width*/ 100).is_none());
             app.chat_widget
                 .update_backend_banner(&super::backend_banner_fallback_tests::fallback_response());
             assert!(app.chat_widget.backend_banner_fallback().is_some());
