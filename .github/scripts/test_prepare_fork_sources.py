@@ -105,6 +105,17 @@ let value: &'static str = env!("CARGO_PKG_VERSION");
         self.assertIn('accept(app_version())', transformed)
         self.assertIn('APP_VERSION = app_version()', transformed)
 
+    def test_tui_version_preparation_preserves_test_version_policy(self):
+        version_file = Path(__file__).resolve().parents[2] / "codex-rs/tui/src/version.rs"
+        source = prep.version_reads(version_file.read_text(encoding="utf-8"))
+        edits, symbols = prep.constants(source)
+        transformed = prep.consumers(source, edits, symbols)
+        self.assertIn("pub fn codex_cli_version()", transformed)
+        self.assertNotIn("pub const codex_cli_version()", transformed)
+        self.assertIn("if cfg!(test)", transformed)
+        self.assertIn('"0.0.0"', transformed)
+        self.assertIn(prep.VERSION, transformed)
+
     def test_grouped_imports_are_supported_and_aliases_fail_explicitly(self):
         symbol = [("APP_VERSION", "app_version", None)]
         self.assertEqual(
