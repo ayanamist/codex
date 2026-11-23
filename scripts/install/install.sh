@@ -1215,6 +1215,23 @@ release_dir_is_complete() {
   [ "$installed_version" = "$expected_version" ]
 }
 
+reuse_standalone_release() (
+  [ "$DAEMON_ONLY" = "1" ] && [ "$RELEASE" = "latest" ] || return 1
+  source_dir="$CODEX_HOME_DIR/packages/standalone/releases/$release_name"
+  [ -d "$source_dir" ] && [ ! -L "$source_dir" ] || return 1
+
+  # Stage on the daemon's filesystem and validate the copy before publishing it.
+  stage_dir="$RELEASES_DIR/.staging.reuse.$release_name.$$"
+  staged_release="$stage_dir/$release_name"
+  trap 'rm -rf "$stage_dir"' EXIT
+  mkdir -p "$staged_release" &&
+    cp -pPR "$source_dir/." "$staged_release/" &&
+    release_dir_is_complete "$staged_release" "$resolved_version" "$vendor_target" "$install_layout" &&
+    mv "$staged_release" "$RELEASES_DIR/$release_name" ||
+    return 1
+  step "Reusing installed Codex CLI package"
+)
+
 update_current_link() {
   release_dir="$1"
   tmp_link="$STANDALONE_ROOT/.current.$$"
@@ -1415,24 +1432,26 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
     warn "Found incomplete existing release at $release_dir; reinstalling."
   fi
 
-  archive_path="$tmp_dir/$asset"
-  checksum_path="$tmp_dir/$checksum_asset"
+  if ! reuse_standalone_release; then
+    archive_path="$tmp_dir/$asset"
+    checksum_path="$tmp_dir/$checksum_asset"
 
-  step "Downloading Codex CLI"
-  if [ "$install_layout" = "package" ]; then
-    checksum_digest="$(release_asset_digest "$checksum_asset")"
-    download_file_with_fallback "$checksum_url" "$checksum_fallback_url" "$checksum_path" "$checksum_digest" "$checksum_asset" "$asset"
-    expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
-  else
-    expected_digest="$(release_asset_digest "$asset")"
-  fi
-  download_file_with_fallback "$download_url" "$download_fallback_url" "$archive_path" "$expected_digest" "$asset"
+    step "Downloading Codex CLI"
+    if [ "$install_layout" = "package" ]; then
+      checksum_digest="$(release_asset_digest "$checksum_asset")"
+      download_file_with_fallback "$checksum_url" "$checksum_fallback_url" "$checksum_path" "$checksum_digest" "$checksum_asset" "$asset"
+      expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
+    else
+      expected_digest="$(release_asset_digest "$asset")"
+    fi
+    download_file_with_fallback "$download_url" "$download_fallback_url" "$archive_path" "$expected_digest" "$asset"
 
-  step "Installing standalone package to $release_dir"
-  if [ "$install_layout" = "package" ]; then
-    install_package_release "$release_dir" "$archive_path"
-  else
-    install_legacy_platform_npm_release "$release_dir" "$archive_path" "$vendor_target"
+    step "Installing standalone package to $release_dir"
+    if [ "$install_layout" = "package" ]; then
+      install_package_release "$release_dir" "$archive_path"
+    else
+      install_legacy_platform_npm_release "$release_dir" "$archive_path" "$vendor_target"
+    fi
   fi
 fi
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then

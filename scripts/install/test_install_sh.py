@@ -344,7 +344,7 @@ class InstallShTest(unittest.TestCase):
                 checksum_path=checksum,
                 force_macos=True,
             )
-            pinned, _ = run_installer_in(root, VERSION, **options)
+            pinned, cli_requests = run_installer_in(root, VERSION, **options)
             self.assertEqual(pinned.returncode, 0, pinned.stderr)
             visible = root / "install-bin/codex"
             original = visible.resolve()
@@ -353,8 +353,15 @@ class InstallShTest(unittest.TestCase):
             profile = root / "home/.profile"
             profile.write_text("unchanged profile\n")
 
-            installed, _ = run_installer_in(root, "latest", daemon_only=True, **options)
+            installed, requests = run_installer_in(
+                root, "latest", daemon_only=True, **options
+            )
             self.assertEqual(installed.returncode, 0, installed.stderr)
+            self.assertIn("Reusing installed Codex CLI package", installed.stdout)
+            self.assertEqual(
+                requests[len(cli_requests) :],
+                ["https://api.github.com/repos/ayanamist/codex/releases/latest"],
+            )
             daemon = root / "codex-home/packages/app-server-daemon"
             release_name = f"{VERSION}-aarch64-apple-darwin"
             self.assertEqual(
@@ -429,6 +436,31 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(profile.read_text(), "unchanged profile\n")
             self.assertFalse(
                 (root / "codex-home/packages/standalone/auto-update-version").exists()
+            )
+
+    def test_daemon_downloads_when_matching_cli_package_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            cli, cli_requests = run_installer_in(root, "latest", **options)
+            self.assertEqual(cli.returncode, 0, cli.stderr)
+            packages = root / "codex-home/packages"
+            helper = Path("bin/codex-code-mode-host")
+            (packages / "standalone/current" / helper).unlink()
+
+            daemon, requests = run_installer_in(root, "latest", daemon_only=True, **options)
+            self.assertEqual(daemon.returncode, 0, daemon.stderr)
+            self.assertTrue((packages / "app-server-daemon/current" / helper).is_file())
+            self.assertFalse((packages / "standalone/current" / helper).exists())
+            self.assertIn(
+                f"https://github.com/ayanamist/codex/releases/download/rust-v{VERSION}/codex-package_SHA256SUMS",
+                requests[len(cli_requests) :],
             )
 
     def test_explicit_release_pins_even_the_current_latest_version(self) -> None:

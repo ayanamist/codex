@@ -317,6 +317,38 @@ function Invoke-WithInstallLock {
     }
 }
 
+function Copy-StandaloneRelease {
+    param(
+        [string]$SourceDir,
+        [string]$Destination,
+        [string]$ExpectedVersion,
+        [string]$ExpectedTarget,
+        [string]$Layout
+    )
+
+    $source = Get-Item -LiteralPath $SourceDir -Force -ErrorAction SilentlyContinue
+    if (-not $source -or -not $source.PSIsContainer -or ($source.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        return $false
+    }
+
+    $releaseName = Split-Path -Leaf $Destination
+    $stageDir = Join-Path (Split-Path -Parent $Destination) ".staging.reuse.$releaseName.$PID"
+    $stagedRelease = Join-Path $stageDir $releaseName
+    try {
+        New-Item -ItemType Directory -Path $stageDir -Force -ErrorAction Stop | Out-Null
+        Copy-Item -LiteralPath $SourceDir -Destination $stagedRelease -Recurse -Force -ErrorAction Stop
+        if (-not (Test-ReleaseIsComplete -ReleaseDir $stagedRelease -ExpectedVersion $ExpectedVersion -ExpectedTarget $ExpectedTarget -Layout $Layout)) {
+            return $false
+        }
+        Move-Item -LiteralPath $stagedRelease -Destination $Destination -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Remove-StaleInstallArtifacts {
     param(
         [string]$ReleasesDir
@@ -1087,7 +1119,11 @@ try {
         }
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
-        if (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {
+        $cliReleaseDir = Join-Path $codexHome "packages\standalone\releases\$releaseName"
+        if ($daemonOnly -and $Release -eq "latest" -and -not (Test-Path -LiteralPath $releaseDir) -and
+            (Copy-StandaloneRelease -SourceDir $cliReleaseDir -Destination $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {
+            Write-Step "Reusing installed Codex CLI package"
+        } elseif (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {
             if (Test-Path -LiteralPath $releaseDir) {
                 if ($daemonOnly) { throw "Refusing to overwrite existing daemon release $releaseDir." }
                 Write-WarningStep "Found incomplete existing release at $releaseDir. Reinstalling."
