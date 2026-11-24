@@ -12,6 +12,8 @@ use crate::ConfigLayer;
 use crate::ConfigLayerMetadata;
 use crate::ConfigLayerSource;
 use crate::ProfileV2Name;
+use crate::guardian_policy::GuardianFallbackLayer;
+use crate::guardian_policy::copy_guardian_requirements;
 use crate::shell_environment_policy::validate_shell_environment_policy_filter_config;
 use crate::types::AppsConfigToml;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -20,6 +22,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use toml::Value as TomlValue;
 
 /// User-facing config loading behavior that is not part of the config document.
@@ -271,8 +274,13 @@ pub struct ConfigLayerStack {
     /// so `effective_config()` can replace complete entries without a fallible conversion.
     model_provider_requirements: Option<TomlValue>,
     /// Layers are listed from lowest precedence (base) to highest (top), so
-    /// later entries in the Vec override earlier ones.
-    layers: Vec<ConfigLayerEntry>,
+    /// later entries override earlier ones. Snapshots share immutable entries;
+    /// changing a layer replaces only that entry in the snapshot's own list.
+    layers: Vec<Arc<ConfigLayerEntry>>,
+    /// Guardian's fallback layers apart from the retained user and session layers.
+    guardian_config: Option<Arc<[GuardianFallbackLayer]>>,
+    /// Runtime source validity for the independently published Guardian snapshot.
+    guardian_binding: Option<crate::CloudConfigBundleBinding>,
 
     /// Constraints that must be enforced when deriving a [Config] from the
     /// layers.
@@ -304,6 +312,8 @@ impl PartialEq for ConfigLayerStack {
             applied_config_server,
             model_provider_requirements,
             layers,
+            guardian_config,
+            guardian_binding: _,
             requirements,
             requirements_toml,
             ignore_user_and_project_exec_policy_rules,
@@ -313,6 +323,7 @@ impl PartialEq for ConfigLayerStack {
         } = self;
         applied_config_server == &other.applied_config_server
             && model_provider_requirements == &other.model_provider_requirements
+            && guardian_config == &other.guardian_config
             && layers == &other.layers
             && requirements == &other.requirements
             && requirements_toml == &other.requirements_toml
@@ -322,6 +333,22 @@ impl PartialEq for ConfigLayerStack {
             && is_projectless == &other.is_projectless
             && project_trust == &other.project_trust
     }
+}
+
+fn is_user_or_session_layer(source: &ConfigLayerSource) -> bool {
+    matches!(
+        source,
+        ConfigLayerSource::User { .. } | ConfigLayerSource::SessionFlags
+    )
+}
+
+fn is_managed_guardian_layer(source: &ConfigLayerSource) -> bool {
+    matches!(
+        source,
+        ConfigLayerSource::EnterpriseManaged { .. }
+            | ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. }
+            | ConfigLayerSource::LegacyManagedConfigTomlFromMdm
+    )
 }
 
 impl ConfigLayerStack {
@@ -340,7 +367,9 @@ impl ConfigLayerStack {
             mcp_ema_cancellation: crate::McpEmaCancellation::default(),
             applied_config_server: None,
             model_provider_requirements,
-            layers,
+            guardian_config: None,
+            guardian_binding: None,
+            layers: layers.into_iter().map(Arc::new).collect(),
             requirements,
             requirements_toml: Box::new(requirements_toml),
             ignore_user_and_project_exec_policy_rules: false,
@@ -430,6 +459,85 @@ impl ConfigLayerStack {
         Ok(())
     }
 
+    /// Replaces only Guardian requirements, managed fallbacks, and source validity.
+    pub fn apply_guardian_policy(&mut self, snapshot: &crate::GuardianPolicySnapshot) {
+        copy_guardian_requirements(
+            &mut self.requirements,
+            &mut self.requirements_toml,
+            &snapshot.policy.requirements,
+            &snapshot.policy.requirements_toml,
+        );
+        let mut fallbacks: Vec<_> = match &self.guardian_config {
+            Some(fallbacks) => fallbacks
+                .iter()
+                .filter(|layer| !is_managed_guardian_layer(&layer.source))
+                .cloned()
+                .collect(),
+            None => self
+                .layers_low_to_high()
+                .filter(|layer| {
+                    !is_user_or_session_layer(&layer.name)
+                        && !is_managed_guardian_layer(&layer.name)
+                })
+                .filter_map(GuardianFallbackLayer::project)
+                .collect(),
+        };
+        fallbacks.extend_from_slice(&snapshot.managed_config);
+        self.guardian_config = Some(fallbacks.into());
+        self.guardian_binding = snapshot.binding.clone();
+    }
+
+    /// Source of the Guardian publication, or the full startup load before its first publication.
+    pub fn guardian_policy_binding(&self) -> Option<&crate::CloudConfigBundleBinding> {
+        if self.guardian_config.is_some() {
+            self.guardian_binding.as_ref()
+        } else {
+            self.cloud_config_binding.as_ref()
+        }
+    }
+
+    /// Retains Guardian policy when a separate runtime refresh rebuilds the stack.
+    pub fn retain_guardian_policy_from(&mut self, current: &Self) {
+        copy_guardian_requirements(
+            &mut self.requirements,
+            &mut self.requirements_toml,
+            &current.requirements,
+            &current.requirements_toml,
+        );
+        self.guardian_config = Some(current.guardian_config.clone().unwrap_or_else(|| {
+            current
+                .layers_low_to_high()
+                .filter(|layer| !is_user_or_session_layer(&layer.name))
+                .filter_map(GuardianFallbackLayer::project)
+                .collect()
+        }));
+        self.guardian_binding = current.guardian_policy_binding().cloned();
+    }
+
+    /// Resolves policy text after merging refreshed and retained layers in precedence order.
+    pub fn guardian_config(&self) -> std::io::Result<crate::config_toml::AutoReviewToml> {
+        let local = self
+            .layers_low_to_high()
+            .filter(|layer| self.guardian_config.is_none() || is_user_or_session_layer(&layer.name))
+            .filter_map(GuardianFallbackLayer::project)
+            .collect::<Vec<_>>();
+        let mut layers = self
+            .guardian_config
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .chain(&local)
+            .collect::<Vec<_>>();
+        layers.sort_by_key(|layer| layer.source.precedence());
+        let mut fallback = TomlValue::Table(Default::default());
+        for layer in layers {
+            merge_toml_values(&mut fallback, &layer.value);
+        }
+        fallback
+            .try_into()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+
     /// Retains session layers while adopting current MCP, plugin, and feature restrictions.
     /// Rejected refreshes must not restore an earlier policy on the next user reload.
     pub fn with_mcp_requirements_from(&self, incoming: &Self) -> Self {
@@ -471,6 +579,7 @@ impl ConfigLayerStack {
             .iter()
             .rev()
             .find(|layer| matches!(layer.name, ConfigLayerSource::User { .. }))
+            .map(Arc::as_ref)
     }
 
     pub fn get_user_config_file(&self) -> Option<&AbsolutePathBuf> {
@@ -555,8 +664,8 @@ impl ConfigLayerStack {
             .iter()
             .position(|layer| layer.name.precedence() > user_layer.name.precedence())
         {
-            Some(index) => layers.insert(index, user_layer),
-            None => layers.push(user_layer),
+            Some(index) => layers.insert(index, Arc::new(user_layer)),
+            None => layers.push(Arc::new(user_layer)),
         }
         Ok(Self {
             layers,
@@ -564,6 +673,8 @@ impl ConfigLayerStack {
             mcp_ema_cancellation: self.mcp_ema_cancellation.clone(),
             applied_config_server: self.applied_config_server.clone(),
             model_provider_requirements: self.model_provider_requirements.clone(),
+            guardian_config: self.guardian_config.clone(),
+            guardian_binding: self.guardian_binding.clone(),
             requirements: self.requirements.clone(),
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
@@ -581,9 +692,12 @@ impl ConfigLayerStack {
         });
         self.layers.insert(
             index,
-            ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, config),
+            Arc::new(ConfigLayerEntry::new(
+                ConfigLayerSource::SessionFlags,
+                config,
+            )),
         );
-        validate_enabled_config_layers(&self.layers)?;
+        validate_enabled_config_layers(self.all_layers_low_to_high())?;
         self.validate_project_mitm_profiles()?;
         Ok(self)
     }
@@ -622,7 +736,10 @@ impl ConfigLayerStack {
                 } else if table.remove(key).is_none() {
                     continue;
                 }
-                *layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, config);
+                *layer = Arc::new(ConfigLayerEntry::new(
+                    ConfigLayerSource::SessionFlags,
+                    config,
+                ));
             }
         } else {
             return self.with_session_config(TomlValue::Table(
@@ -662,6 +779,8 @@ impl ConfigLayerStack {
             mcp_ema_cancellation: self.mcp_ema_cancellation.clone(),
             applied_config_server: self.applied_config_server.clone(),
             model_provider_requirements: self.model_provider_requirements.clone(),
+            guardian_config: self.guardian_config.clone(),
+            guardian_binding: self.guardian_binding.clone(),
             requirements: self.requirements.clone(),
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
@@ -783,7 +902,7 @@ impl ConfigLayerStack {
     ///
     /// Requirement sources are tracked separately and are not included here.
     pub fn all_layers_low_to_high(&self) -> impl DoubleEndedIterator<Item = &ConfigLayerEntry> {
-        self.layers.iter()
+        self.layers.iter().map(Arc::as_ref)
     }
 
     /// Returns all config layers, including disabled layers, from highest
@@ -796,8 +915,10 @@ impl ConfigLayerStack {
 }
 
 /// Validates before merging so mixed forms and malformed filter entries cannot be normalized away.
-pub(crate) fn validate_enabled_config_layers(layers: &[ConfigLayerEntry]) -> std::io::Result<()> {
-    for layer in layers.iter().filter(|layer| !layer.is_disabled()) {
+pub(crate) fn validate_enabled_config_layers<'a>(
+    layers: impl IntoIterator<Item = &'a ConfigLayerEntry>,
+) -> std::io::Result<()> {
+    for layer in layers.into_iter().filter(|layer| !layer.is_disabled()) {
         validate_shell_environment_policy_filter_config(&layer.config).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
