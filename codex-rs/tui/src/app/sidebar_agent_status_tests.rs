@@ -392,7 +392,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
             ) {
                 break Ok::<_, color_eyre::Report>(event);
             }
-            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+            app.dispatch_event(&mut tui, &mut server, event).await?;
         }
     })
     .await??;
@@ -412,7 +412,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     let agent = link.agent_id().unwrap();
     let backend = server.backend_id();
     for (source, target) in [(ThreadId::new(), agent), (root, ThreadId::new())] {
-        Box::pin(app.handle_event(
+        app.dispatch_event(
             &mut tui,
             &mut server,
             crate::app_event::AppEvent::OpenSidebarAgent {
@@ -420,14 +420,14 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
                 source,
                 agent: target,
             },
-        ))
+        )
         .await?;
         assert_eq!(app.current_displayed_thread_id(), Some(root));
     }
     // A thread ID recovered from replay is a candidate, even if it was inherited from a fork.
     let inherited = ThreadId::new();
     assert!(app.register_sidebar_agent(root, inherited));
-    Box::pin(app.handle_event(
+    app.dispatch_event(
         &mut tui,
         &mut server,
         crate::app_event::AppEvent::OpenSidebarAgent {
@@ -435,7 +435,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
             source: root,
             agent: inherited,
         },
-    ))
+    )
     .await?;
     assert_eq!(app.current_displayed_thread_id(), Some(root));
     let pane = app.sidebar_mut();
@@ -469,12 +469,12 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
         Box::pin(app.handle_tui_event(&mut tui, &mut server, click)).await?;
     }
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert_eq!(app.current_displayed_thread_id(), Some(root));
-    Box::pin(app.handle_event(&mut tui, &mut server, discovery)).await?;
+    app.dispatch_event(&mut tui, &mut server, discovery).await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert_eq!(app.current_displayed_thread_id(), Some(child));
     assert_eq!(app.docked_agent(), Some((root, child)));
@@ -522,7 +522,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     Box::pin(app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(KeyCode::Esc.into())))
         .await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert_eq!(app.current_displayed_thread_id(), Some(root));
     assert_eq!(app.docked_agent(), None);
@@ -544,7 +544,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
         .await?;
     assert_eq!(app.docked_agent(), Some((root, child)));
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     let cell = crate::multi_agents::sub_agent_activity_history_cell(
         &ThreadItemPayload::SubAgentActivity {
@@ -560,7 +560,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     app.insert_history_cell(&mut tui, Box::new(cell));
     Box::pin(app.select_agent_thread(&mut tui, &mut server, root)).await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     let screen = side_frame(&mut app, &mut tui, Size::new(140, 20))?;
     let (row, column) = screen
@@ -585,7 +585,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     );
     Box::pin(app.handle_tui_event(&mut tui, &mut server, TuiEvent::Mouse(click))).await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert_eq!(app.current_displayed_thread_id(), Some(nested));
     assert_eq!(app.docked_agent(), Some((root, nested)));
@@ -610,14 +610,14 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     assert_eq!(app.current_displayed_thread_id(), Some(root));
     assert_eq!(app.docked_agent(), None);
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert!(!app.side_companions.contains_key(&child));
 
     // Closing a saved side chat can return to the last-used agent tab.
     app.open_sidebar_agent(&mut tui, &mut server, child).await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     let started = server.start_thread(&config).await?;
     let side = started.session.thread_id;
@@ -634,7 +634,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     app.activate_sidebar_tab(&mut tui, &mut server, SidebarTab::Chat(side))
         .await?;
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
     assert_eq!(app.current_displayed_thread_id(), Some(side));
     app.close_sidebar_tab(&mut tui, &mut server, SidebarTab::Chat(side))
@@ -642,7 +642,7 @@ async fn opens_agent_transcript_beside_parent_and_returns_to_chooser() -> color_
     assert_eq!(app.current_displayed_thread_id(), Some(child));
     assert!(app.side_threads[&side].close_request.is_some());
     while let Ok(event) = rx.try_recv() {
-        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        app.dispatch_event(&mut tui, &mut server, event).await?;
     }
 
     app.keymap.app.close_sidebar_tab = vec![crate::key_hint::plain(KeyCode::F(8))];

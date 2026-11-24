@@ -3,6 +3,8 @@
 //! This module contains the exhaustive `AppEvent` dispatcher and exit-mode handling. Large domain
 //! actions are delegated to focused app submodules so the central match remains the routing layer.
 
+use std::future::Future;
+
 use super::rate_limit_refresh::RateLimitReadStatus;
 use super::rate_limit_refresh::RateLimitRefreshOutcome;
 use super::resize_reflow::trailing_run_start;
@@ -30,6 +32,16 @@ use codex_app_server_protocol::WindowsSandboxSetupMode;
 pub(super) const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    // Construct the dispatcher future outside its caller's stack frame.
+    pub(super) fn dispatch_event(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        event: AppEvent,
+    ) -> impl Future<Output = Result<AppRunControl>> {
+        Box::pin(self.handle_event(tui, app_server, event))
+    }
+
     // Keep the existing dispatcher layout until it can be formatted separately.
     #[rustfmt::skip]
     pub(crate) async fn handle_event(

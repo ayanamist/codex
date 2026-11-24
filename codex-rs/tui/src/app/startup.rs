@@ -1667,7 +1667,7 @@ See the Codex keymap documentation for supported actions and examples."
                         // and protected-input drain when replay completes.
                         let had_visible_modal = app.chat_widget.has_active_modal()
                             && !app.awaiting_side_replay(tui);
-                        match Box::pin(app.handle_event(tui, backends.session_at_mut(event_session), event)).await {
+                        match app.dispatch_event(tui, backends.session_at_mut(event_session), event).await {
                             Ok(AppRunControl::Continue) => {
                                 if is_initial_session_header {
                                     waiting_for_initial_session_header = false;
